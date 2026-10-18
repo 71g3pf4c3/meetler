@@ -134,12 +134,16 @@ func (a *app) helpText() string {
 	return "meetler — мост в палату 🏥\n\n" +
 		"• Голосовое / аудио / видео / кружок → проиграю всем в палате (до " +
 		fmt.Sprint(maxUploadSec) + " сек).\n" +
-		"• Текст с @упоминанием меня ИЛИ (в личке) с #палатой → озвучу (piper TTS).\n" +
+		"• /tovoice в реплае на сообщение с медиа (в т.ч. музыку документом) →\n" +
+		"  проиграю это медиа в палате.\n" +
+		"• /tts <текст> → озвучу текст (piper TTS).\n" +
+		"• Текст с @упоминанием меня ИЛИ (в личке) с #палатой → тоже озвучу.\n" +
 		"• Палата: #6 или /palata 6 в сообщении/подписи; запомнить свою: /palata 6;\n" +
 		"  посмотреть текущую: /palata; по умолчанию: " + a.cfg.defPalata + ".\n\n" +
 		"В группах я реагирую только на адресованные мне сообщения: @упоминание,\n" +
-		"реплай на моё сообщение или #палата в подписи к медиа. Чтобы я вообще\n" +
-		"видел медиа, я должен быть админом группы или с выключенным privacy mode\n" +
+		"реплай на моё сообщение или #палата в подписи к медиа (команды /tts и\n" +
+		"/tovoice работают всегда). Чтобы я вообще видел медиа, я должен быть\n" +
+		"админом группы или с выключенным privacy mode\n" +
 		"(@BotFather → /setprivacy → Disable).\n\n" +
 		"Всё проигрываемое — не длиннее " + fmt.Sprint(maxPlaySec) + " сек.\n" +
 		"/help — эта справка."
@@ -184,6 +188,8 @@ func main() {
 		Commands: []telego.BotCommand{
 			{Command: "help", Description: "Справка: медиа и TTS в палату"},
 			{Command: "palata", Description: "Показать или задать палату: /palata 6"},
+			{Command: "tts", Description: "Озвучить текст: /tts привет палата"},
+			{Command: "tovoice", Description: "В реплае на медиа: проиграть его в палате"},
 		},
 	})
 
@@ -252,6 +258,75 @@ func (a *app) reply(ctx context.Context, chatID int64, text string) {
 	})
 }
 
+// cmdTTS: /tts <текст> — явный вызов озвучки (работает и в группах:
+// команда сама по себе адресована боту, упоминание не нужно).
+func (a *app) cmdTTS(ctx context.Context, m *telego.Message, arg, palata string) {
+	if arg == "" {
+		a.reply(ctx, m.Chat.ID, "Использование: /tts <текст> — озвучу его в палате "+palata+".")
+		return
+	}
+	if !a.tts.enabled() {
+		a.reply(ctx, m.Chat.ID, "TTS выключен (нет piper).")
+		return
+	}
+	if err := a.streamTTS(ctx, palata, arg); err != nil {
+		log.Printf("streamTTS: %v", err)
+		a.reply(ctx, m.Chat.ID, "TTS ошибка: "+err.Error())
+		return
+	}
+	a.reply(ctx, m.Chat.ID, "✓ озвучено в палате "+palata)
+}
+
+// cmdToVoice: /tovoice в РЕПЛАЕ на сообщение с медиа (голосовое/аудио/видео/
+// кружок/музыка документом) — проиграть это медиа в палате. Явная команда:
+// в группах не требует @упоминания на исходном сообщении.
+func (a *app) cmdToVoice(ctx context.Context, m *telego.Message, palata string) {
+	rt := m.ReplyToMessage
+	if rt == nil {
+		a.reply(ctx, m.Chat.ID,
+			"Ответь /tovoice на сообщение с голосовым/аудио/видео/музыкой — проиграю его в палате "+palata+".")
+		return
+	}
+	var fileID string
+	var dur int
+	isVideo := false
+	switch {
+	case rt.Voice != nil:
+		fileID, dur = rt.Voice.FileID, rt.Voice.Duration
+	case rt.Audio != nil:
+		fileID, dur = rt.Audio.FileID, rt.Audio.Duration
+	case rt.VideoNote != nil:
+		fileID, dur, isVideo = rt.VideoNote.FileID, rt.VideoNote.Duration, true
+	case rt.Video != nil:
+		fileID, dur, isVideo = rt.Video.FileID, rt.Video.Duration, true
+	case rt.Document != nil:
+		// музыка часто приходит документом (mp3-файлом): берём по mime
+		mt := strings.ToLower(rt.Document.MimeType)
+		switch {
+		case strings.HasPrefix(mt, "audio/"):
+			fileID = rt.Document.FileID
+		case strings.HasPrefix(mt, "video/"):
+			fileID, isVideo = rt.Document.FileID, true
+		}
+	}
+	if fileID == "" {
+		a.reply(ctx, m.Chat.ID, "В этом сообщении нет медиа (нужны голосовое/аудио/видео/музыка).")
+		return
+	}
+	if dur > maxUploadSec {
+		a.reply(ctx, m.Chat.ID, fmt.Sprintf(
+			"Слишком длинная запись: %d сек (максимум %d).",
+			dur, maxUploadSec))
+		return
+	}
+	if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
+		log.Printf("streamFile: %v", err)
+		a.reply(ctx, m.Chat.ID, "Не удалось проиграть: "+err.Error())
+		return
+	}
+	a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
+}
+
 func (a *app) handle(ctx context.Context, m *telego.Message) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -277,6 +352,20 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 		m.ReplyToMessage.From.ID == a.meID
 	mentioned := a.me != "" && strings.Contains(strings.ToLower(text+" "+caption), "@"+a.me)
 
+	// --- палата: явная в тексте/подписи -> сохранённая -> дефолт ---
+	// (до команд: /tts и /tovoice должны знать, куда играть)
+	palata := palataFromText(caption)
+	if palata == "" {
+		palata = palataFromText(text)
+	}
+	if palata == "" {
+		palata = a.store.get(uid, a.cfg.defPalata)
+	}
+	if !palataRe.MatchString(palata) {
+		a.reply(ctx, m.Chat.ID, "Неверный номер палаты.")
+		return
+	}
+
 	// --- команды (только чистый текст, без медиа) ---
 	if text != "" && m.Voice == nil && m.Audio == nil && m.Video == nil && m.VideoNote == nil {
 		if cmd, addressee, arg, ok := parseCommand(text); ok {
@@ -289,7 +378,7 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 				return
 			case "palata", "room":
 				if arg == "" {
-					a.reply(ctx, m.Chat.ID, "Текущая палата: "+a.store.get(uid, a.cfg.defPalata))
+					a.reply(ctx, m.Chat.ID, "Текущая палата: "+palata)
 					return
 				}
 				if !palataRe.MatchString(arg) {
@@ -299,6 +388,12 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 				a.store.set(uid, arg)
 				a.reply(ctx, m.Chat.ID, "Палата запомнена: "+arg)
 				return
+			case "tts":
+				a.cmdTTS(ctx, m, arg, palata)
+				return
+			case "tovoice":
+				a.cmdToVoice(ctx, m, palata)
+				return
 			}
 			// неизвестная команда: в личке подскажем, в группе молчим (шумно)
 			if !isGroup {
@@ -306,19 +401,6 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 				return
 			}
 		}
-	}
-
-	// --- палата: явная в тексте/подписи -> сохранённая -> дефолт ---
-	palata := palataFromText(caption)
-	if palata == "" {
-		palata = palataFromText(text)
-	}
-	if palata == "" {
-		palata = a.store.get(uid, a.cfg.defPalata)
-	}
-	if !palataRe.MatchString(palata) {
-		a.reply(ctx, m.Chat.ID, "Неверный номер палаты.")
-		return
 	}
 
 	// --- медиа ---
