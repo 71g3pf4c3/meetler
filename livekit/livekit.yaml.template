@@ -26,6 +26,11 @@ rtc:
   # на интерфейсе можно вместо этого задать node_ip (см. README, вариант без NAT).
   use_external_ip: true
 
+  # ICE lite ОТКЛЮЧЁН намеренно: ускоряет установку на копейки, но ломает коннект
+  # за NAT/в части сетей (could not establish pc connection). Приоритет —
+  # "коннект не рвётся", а не микросекунды на установке. Full ICE надёжнее.
+  # use_ice_lite: false
+
   # Congestion control — ядро "минимизации задержки". Server-side BWE через TWCC:
   # SFU переключает simulcast-слои ДО начала потерь, не допускает bufferbloat.
   congestion_control:
@@ -34,19 +39,23 @@ rtc:
     use_send_side_bwe: true    # send-side BWE точнее receiver reports на egress
     send_side_bwe_pacer: no-queue
 
-  # Connection stability: авто-fallback UDP → ICE/TCP → TURN/TLS.
+  # МАКСИМАЛЬНАЯ устойчивость: авто-fallback UDP → ICE/TCP → TURN/TLS.
   allow_tcp_fallback: true
-  # Если signaling RTT ниже порога — пробуем ICE/TCP; выше — сразу TURN/TLS.
-  # 150ms: на "хорошем" линке дотягиваемся TCP, на плохом не тратим время.
-  tcp_fallback_rtt_threshold: 150
+  # 0 = ICE/TCP пробуем ВСЕГДA при проблеме с UDP, не гадаем по RTT.
+  # Приоритет "коннект любой ценой" над скоростью установки.
+  tcp_fallback_rtt_threshold: 0
   # Миграция уже установленного, но лоссёвого UDP на TCP/TURN без реконнекта.
   allow_udp_unstable_fallback: true
+  # Больше буфер пакетов — переживаем всплески потерь/джиттера, не роняя поток.
+  packet_buffer_size_video: 1000
+  packet_buffer_size_audio: 500
 
-  # PLI throttle: баланс между "чёрный экран при джойне" и лишним битрейтом.
+  # PLI throttle агрессивный: быстрее keyframe → быстрее картинка после джойна/обрыва.
+  # Качество/битрейт побоку, скорость восстановления важнее.
   pli_throttle:
-    low_quality: 500ms
-    mid_quality: 1s
-    high_quality: 1s
+    low_quality: 200ms
+    mid_quality: 300ms
+    high_quality: 500ms
 
 # Встроенный TURN с TLS на 5349 — проходит сквозь корпоративные firewall (443-like).
 # Это 50% "стабильности коннекта" за NAT. Требует валидного TLS-серта на домен TURN.
@@ -64,8 +73,8 @@ turn:
 
 room:
   auto_create: true            # комната создаётся при первом джойне — нужно для анонимного UX
-  empty_timeout: 300           # держим пустую комнату 5 мин (reconnect grace)
-  departure_timeout: 20
+  empty_timeout: 900           # 15 мин — широкий reconnect grace, комната не схлопывается
+  departure_timeout: 60        # держим слот участника дольше при обрыве → бесшовный reconnect
   max_participants: 0          # лимит навязывает token-svc per-room, тут 0 = без глоб. лимита
   enabled_codecs:
     - mime: audio/opus         # только opus mono — простой/надёжный аудио-путь

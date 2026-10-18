@@ -1,4 +1,4 @@
-# hit-meet — self-hosted WebRTC conferencing (LiveKit SFU) с анонимным входом.
+# meetler — self-hosted WebRTC conferencing (LiveKit SFU) с анонимным входом.
 #
 # Media networking (критично, читай README):
 #   - LiveKit SFU раздаёт RTP по UDP 50000-60000 → эти порты НЕ за прокси, host-level.

@@ -1,4 +1,4 @@
-// hit-meet браузерный клиент на livekit-client (пинованная версия).
+// meetler браузерный клиент на livekit-client (пинованная версия).
 // Фокус: latency + stability. Все tuning-решения прокомментированы.
 import {
   Room,
@@ -40,8 +40,7 @@ function ensureTile(participant) {
   label.className = 'label';
   label.textContent = participant.name || participant.identity;
   const ph = document.createElement('div');
-  ph.className = 'ph';
-  ph.textContent = 'нет видео';
+  ph.className = 'ph';   // фон = дефолтная аватарка (CSS)
   el.appendChild(ph);
   el.appendChild(label);
   grid.appendChild(el);
@@ -94,7 +93,7 @@ async function join() {
   const roomName = $('room').value.trim();
   const name = $('name').value.trim();
   if (!roomName) {
-    $('err').textContent = 'Укажите комнату';
+    $('err').textContent = 'Укажите номер палаты';
     return;
   }
   // getUserMedia доступен только в secure context (https или localhost).
@@ -111,30 +110,25 @@ async function join() {
     const { token } = await mintToken(roomName, name);
 
     room = new Room({
-      // adaptiveStream: клиент сам просит у SFU слой под размер видимого тайла —
-      // экономит downlink, снижает лаг при многих участниках.
       adaptiveStream: true,
-      // dynacast: SFU не гоняет слои, которые никто не смотрит.
       dynacast: true,
-      // reconnect-политика для стабильности: агрессивнее держимся за соединение.
       disconnectOnPageLeave: true,
+      // МАКСИМАЛЬНАЯ устойчивость реконнекта (качество побоку).
+      // Короткие частые попытки, много попыток — коннект держится до последнего.
+      reconnectPolicy: {
+        nextRetryDelayInMs: (ctx) => (ctx.retryCount < 3 ? 300 : ctx.retryCount < 10 ? 1000 : 2000),
+        maxRetries: 100,
+      },
       publishDefaults: {
-        // simulcast ВКЛючён: публикуем 3 слоя, SFU раздаёт под bandwidth получателя.
-        simulcast: true,
-        videoSimulcastLayers: [
-          VideoPresets.h180,
-          VideoPresets.h360,
-          VideoPresets.h720,
-        ],
-        // Аудио: минимальная задержка, минимум "жатия".
-        // DTX ВЫКЛ — DTX режет начала фраз (comfort noise вместо голоса на старте).
-        // RED ВЫКЛ — простой путь, чинит "одно ухо".
-        // Повышенный битрейт opus (48k) — меньше компрессионных артефактов.
+        // simulcast ВЫКЛ: один слой надёжнее и дешевле, чем жонглирование тремя.
+        simulcast: false,
+        // видео на минимум — лишь бы пролезло в любой канал. Качество не важно.
+        videoEncoding: { maxBitrate: 150000, maxFramerate: 15 },
+        videoCodec: 'vp8',
+        // Аудио: минимальная задержка. Низкий битрейт (качество побоку).
         dtx: false,
         red: false,
-        audioPreset: { maxBitrate: 48000 },
-        // стартовый кодек видео: vp8 максимально совместим; vp9/av1 — через negotiate.
-        videoCodec: 'vp8',
+        audioPreset: { maxBitrate: 24000 },
       },
     });
 
@@ -147,24 +141,24 @@ async function join() {
 
     // Публикуем микрофон и камеру РАЗДЕЛЬНО: если нет камеры (или отказ по видео),
     // звук всё равно должен работать. Общий enableCameraAndMicrophone падал целиком.
+    // Захват устройств с таймаутом: зависший getUserMedia (битый драйвер, занятое
+    // устройство) НЕ должен блокировать вход в палату. Вошли — потом доберём медиа.
+    const withTimeout = (p, ms) =>
+      Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+
     let micOk = false, camOk = false;
     try {
-      // mono-захват, минимальная обработка для низкой задержки.
-      // echoCancellation оставляем (без него эхо хуже всего). NS/AGC выключены —
-      // они добавляют latency и "жмут" звук. latency hint = 0 (минимальный буфер).
-      await room.localParticipant.setMicrophoneEnabled(true, {
-        channelCount: 1,
+      await withTimeout(room.localParticipant.setMicrophoneEnabled(true, {
         echoCancellation: true,
         noiseSuppression: false,
         autoGainControl: false,
-        latency: 0,
-      });
+      }), 8000);
       micOk = true;
     } catch (e) {
       console.warn('mic failed:', e);
     }
     try {
-      await room.localParticipant.setCameraEnabled(true);
+      await withTimeout(room.localParticipant.setCameraEnabled(true), 8000);
       camOk = true;
     } catch (e) {
       console.warn('cam failed:', e);
@@ -188,7 +182,9 @@ async function join() {
     }
 
     $('join').style.display = 'none';
-    $('stage').style.display = 'flex';
+    $('stage').style.display = 'block';
+    const crumb = $('roomCrumb');
+    if (crumb) crumb.textContent = roomName;
     startStats();
   } catch (e) {
     $('err').textContent = 'Ошибка входа: ' + (e.message || e);
@@ -426,7 +422,7 @@ $('recBtn').onclick = () => {
   const a = document.createElement('a');
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   a.href = url;
-  a.download = `hit-meet-${ts}.wav`;
+  a.download = `meetler-${ts}.wav`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -436,14 +432,15 @@ $('recBtn').onclick = () => {
 $('leaveBtn').onclick = () => { if (room) room.disconnect(); };
 
 function cleanup() {
-  try { if (recRecorder && recRecorder.state !== 'inactive') recRecorder.stop(); } catch (_) {}
+  try { if (recProc) recProc.disconnect(); } catch (_) {}
   try { if (recCtx) recCtx.close(); } catch (_) {}
-  recCtx = null; recDest = null; recRecorder = null; recChunks = [];
+  recCtx = null; recProc = null; recMixGain = null; recRing = null;
+  recWritePos = 0; recFilled = 0;
   tiles.forEach((t) => t.el.remove());
   tiles.clear();
   if (localTile) { localTile.remove(); localTile = null; }
   $('stage').style.display = 'none';
-  $('join').style.display = 'flex';
+  $('join').style.display = 'block';
   $('joinBtn').disabled = false;
   stopStats();
 }

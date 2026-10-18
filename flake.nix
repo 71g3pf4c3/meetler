@@ -1,5 +1,5 @@
 {
-  description = "hit-meet — self-hosted WebRTC conferencing (LiveKit SFU) with anonymous join";
+  description = "meetler — self-hosted WebRTC conferencing (LiveKit SFU) with anonymous join";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -9,7 +9,7 @@
   outputs = { self, nixpkgs, flake-utils }:
     let
       # web — статика клиента как derivation (просто копия web/ в store)
-      mkWeb = pkgs: pkgs.runCommand "hit-meet-web" { } ''
+      mkWeb = pkgs: pkgs.runCommand "meetler-web" { } ''
         mkdir -p $out
         cp -r ${./web}/. $out/
       '';
@@ -37,6 +37,6 @@
         inherit self;
         mkWeb = mkWeb;
       };
-      nixosModules.hit-meet = self.nixosModules.default;
+      nixosModules.meetler = self.nixosModules.default;
     };
 }

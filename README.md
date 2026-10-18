@@ -1,13 +1,39 @@
-# hit-meet
+# meetler
 
-Self-hosted видеоконференции на WebRTC. SFU — [LiveKit](https://github.com/livekit/livekit)
-(Go, pion под капотом). Фокус: минимизация задержки и стабильность коннекта.
-Вход анонимный — без аккаунтов, по ссылке/коду комнаты.
+Self-hosted видеоконференции на WebRTC в эстетике старого форума/дурдома. SFU —
+[LiveKit](https://github.com/livekit/livekit) (Go, pion под капотом). Фокус:
+минимальная задержка и коннект, который не рвётся. Вход анонимный — без аккаунтов,
+по номеру «палаты».
 
-Это не форк Jitsi. Это та же архитектура (SFU + сигналинг + TURN + браузерный
-клиент), но на Go-SFU с production-grade congestion control, который не надо писать
-самому: TWCC send-side BWE, simulcast, dynacast, adaptive stream, RED/FEC, авто-fallback
-UDP → ICE/TCP → TURN/TLS.
+Это не форк Jitsi. Та же архитектура (SFU + сигналинг + TURN + браузерный клиент),
+но на Go-SFU с production-grade congestion control: TWCC send-side BWE, dynacast,
+adaptive stream, агрессивный авто-fallback UDP → ICE/TCP → TURN/TLS.
+
+## Скриншоты
+
+Приёмное отделение (вход в палату):
+
+![Вход](docs/screenshots/01-join.png)
+
+Палата с участниками (зелёная рамка = говорит):
+
+![Палата](docs/screenshots/02-ward.png)
+
+Выключенная камера → дефолтная аватарка:
+
+![Аватар](docs/screenshots/03-avatar.png)
+
+## Фичи
+
+- Анонимный вход, рандомный identity, без PII.
+- Видео (simulcast off, 180p низкий битрейт — приоритет «пролезть всегда»).
+- Аудио opus mono, DTX/RED off — минимум задержки и обработки.
+- Зелёная подсветка говорящих (`ActiveSpeakersChanged`).
+- Дефолтная аватарка при выключенной камере.
+- Кнопка **ГОЙДА** — проигрывает mp3 на всю палату.
+- **Скачать 15с** — кольцевой PCM-буфер микса комнаты → .wav (ровно 15с).
+- Устойчивость: бесконечный reconnect, захват устройств с таймаутом (зависший
+  getUserMedia не блокирует вход), fallback на TCP/TURN при любой проблеме UDP.
 
 ## Архитектура
 
@@ -106,16 +132,16 @@ Flake экспортирует `nixosModules.default`, который обора
 reverse-proxy (Caddy или nginx) + ACME + firewall.
 
 ```nix
-# flake.nix твоей системы
+# flake.nix твоей системы (репозиторий на GitHub пока называется hit-meet)
 {
-  inputs.hit-meet.url = "github:71g3pf4c3/hit-meet";
-  outputs = { nixpkgs, hit-meet, ... }: {
+  inputs.meetler.url = "github:71g3pf4c3/hit-meet";
+  outputs = { nixpkgs, meetler, ... }: {
     nixosConfigurations.meet = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
-        hit-meet.nixosModules.default
+        meetler.nixosModules.default
         {
-          services.hit-meet = {
+          services.meetler = {
             enable = true;
             domain = "meet.example.com";
             acmeEmail = "admin@example.com";
@@ -141,7 +167,7 @@ reverse-proxy (Caddy или nginx) + ACME + firewall.
 Caddy проксирует WS прозрачно. ACME централизован в `security.acme`, серт шарится
 между webserver и встроенным TURN livekit через группу-владельца.
 
-На первом деплое (серта ещё нет) можно `services.hit-meet.enableTurn = false`,
+На первом деплое (серта ещё нет) можно `services.meetler.enableTurn = false`,
 после выписки серта — снять флаг и пересобрать.
 
 Dev-shell: `nix develop` (go, gopls, livekit, livekit-cli, caddy, nginx).

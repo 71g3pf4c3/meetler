@@ -3,92 +3,174 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>hit-meet</title>
+  <title>meetler :: палата №6</title>
+  <link rel="icon" type="image/png" href="./logo.png" />
   <style>
-    :root { color-scheme: dark; }
+    /* UI в стиле старых форумов (rutracker / 4chan): таблицы, Verdana, бежевый фон. */
     * { box-sizing: border-box; }
     body {
-      margin: 0; font-family: system-ui, sans-serif; background: #0d0f12; color: #e6e8eb;
-      height: 100vh; display: flex; flex-direction: column;
+      margin: 0; padding: 0;
+      font-family: Verdana, Arial, Tahoma, sans-serif; font-size: 12px;
+      background: #e8e8e8; color: #000;
     }
-    #join {
-      margin: auto; display: flex; flex-direction: column; gap: 12px;
-      padding: 32px; background: #15181d; border-radius: 12px; width: 320px;
+    a { color: #0000cc; }
+
+    /* шапка форума */
+    #masthead {
+      background: #0f5b8a;
+      background: linear-gradient(#1a6ea3, #0f5b8a);
+      color: #fff; padding: 6px 10px; border-bottom: 2px solid #073d5e;
+      display: flex; align-items: center; gap: 10px;
     }
-    #join h1 { margin: 0 0 8px; font-size: 20px; }
-    input {
-      padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f37;
-      background: #0d0f12; color: #e6e8eb; font-size: 15px;
+    #masthead img.logoimg {
+      height: 44px; width: 44px; object-fit: contain;
+      border: 1px solid #073d5e; background: #fff; border-radius: 3px;
     }
+    #masthead .logo { font-size: 20px; font-weight: bold; letter-spacing: 1px; }
+    #masthead .logo b { color: #ffd34d; }
+    #masthead .slogan { font-size: 11px; color: #cfe6f5; }
+
+    #wrap { max-width: 1000px; margin: 8px auto; padding: 0 8px; }
+
+    /* навигационная "хлебная крошка" */
+    .navbar {
+      background: #d7c9a7; border: 1px solid #b3a079; padding: 3px 8px;
+      font-size: 11px; color: #4a3b1a; margin-bottom: 8px;
+    }
+    .navbar b { color: #800000; }
+
+    /* табличный блок как на форуме */
+    table.forum {
+      width: 100%; border-collapse: collapse; background: #fff;
+      border: 1px solid #a0a0a0; margin-bottom: 10px;
+    }
+    table.forum th {
+      background: #800000; color: #fff; text-align: left;
+      padding: 4px 8px; font-size: 12px; border: 1px solid #600000;
+    }
+    table.forum td {
+      padding: 6px 8px; border: 1px solid #c8c8c8; vertical-align: top;
+      background: #f7f3ea;
+    }
+    table.forum tr:nth-child(even) td { background: #efe9dc; }
+    td.label-cell { width: 140px; color: #44423c; font-weight: bold; background: #e4dcc8 !important; }
+
+    input.f {
+      font-family: Verdana, Arial, sans-serif; font-size: 12px;
+      padding: 3px 5px; border: 1px solid #7f9db9; background: #fff; width: 260px;
+    }
+
+    /* кнопки — "вдавленные", как в старых формах */
     button {
-      padding: 10px 14px; border-radius: 8px; border: 0; cursor: pointer;
-      background: #3b82f6; color: #fff; font-size: 15px; font-weight: 600;
+      font-family: Verdana, Arial, sans-serif; font-size: 11px;
+      padding: 3px 10px; cursor: pointer;
+      border: 1px solid #8a8a8a; border-top-color: #fff; border-left-color: #fff;
+      background: #ece9d8; color: #000;
     }
-    button:disabled { opacity: .5; cursor: default; }
-    button.secondary { background: #2a2f37; }
-    button.danger { background: #dc2626; }
+    button:active { border-color: #fff #8a8a8a #8a8a8a #fff; }
+    button:disabled { color: #999; cursor: default; }
+    button.primary { font-weight: bold; background: #d7e6c9; }
+    button.danger  { background: #e6c9c9; }
     button.goida {
-      background: linear-gradient(135deg, #f59e0b, #dc2626);
-      font-weight: 800; letter-spacing: 1px;
+      font-weight: bold; color: #800000; letter-spacing: 1px;
+      background: #ffe08a; border-color: #b8860b #7a5a08 #7a5a08 #b8860b;
     }
-    button.goida:active { transform: scale(.96); }
-    button.goida.playing { animation: goidaPulse .5s ease-in-out infinite alternate; }
-    @keyframes goidaPulse {
-      from { box-shadow: 0 0 0 0 rgba(245,158,11,.6); }
-      to   { box-shadow: 0 0 18px 4px rgba(220,38,38,.8); }
+    button.goida.playing { animation: goidaBlink .4s steps(1) infinite; }
+    @keyframes goidaBlink {
+      50% { background: #ff6a00; color: #fff; }
     }
-    #stage { flex: 1; display: none; flex-direction: column; min-height: 0; }
+
+    /* конференция */
+    #stage { display: none; }
+    #bar {
+      background: #d7c9a7; border: 1px solid #b3a079; padding: 5px 8px;
+      margin-bottom: 8px; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+    }
+    #stats { margin-left: auto; font-size: 11px; color: #4a3b1a; }
+
     #grid {
-      flex: 1; display: grid; gap: 8px; padding: 8px; min-height: 0;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      align-content: start;
+      display: grid; gap: 6px;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     }
     .tile {
-      position: relative; background: #000; border-radius: 10px; overflow: hidden;
-      aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center;
-      outline: 3px solid transparent; outline-offset: -3px;
-      transition: outline-color .12s ease, box-shadow .12s ease;
+      position: relative; background: #000; overflow: hidden;
+      aspect-ratio: 4/3; border: 2px solid #808080;
+      display: flex; align-items: center; justify-content: center;
     }
-    /* говорящий участник — зелёная рамка + свечение */
-    .tile.speaking {
-      outline-color: #22c55e;
-      box-shadow: 0 0 0 1px #22c55e, 0 0 16px 2px rgba(34,197,94,.55);
-    }
+    /* говорящий — зелёная рамка как "онлайн" на форуме */
+    .tile.speaking { border-color: #2e8b2e; box-shadow: 0 0 0 1px #2e8b2e inset; }
     .tile video { width: 100%; height: 100%; object-fit: cover; }
     .tile .label {
-      position: absolute; left: 8px; bottom: 8px; padding: 2px 8px;
-      background: rgba(0,0,0,.6); border-radius: 6px; font-size: 13px;
+      position: absolute; left: 0; bottom: 0;
+      padding: 1px 6px; font-size: 11px; color: #ffd34d;
+      background: rgba(0,0,0,.75); border-top-right-radius: 3px;
+      font-weight: bold;
     }
-    .tile .ph { color: #4b5563; font-size: 14px; }
-    #bar {
-      display: flex; gap: 8px; justify-content: center; padding: 12px;
-      background: #15181d; align-items: center;
+    /* плейсхолдер при выключенной камере — дефолтная аватарка */
+    .tile .ph {
+      width: 100%; height: 100%;
+      background: #1a1a1a url('./avatar.jpg') center/cover no-repeat;
     }
-    #stats { font-size: 12px; color: #6b7280; margin-left: auto; }
-    #err { color: #f87171; font-size: 13px; min-height: 16px; }
+
+    #err { color: #a00; font-size: 11px; min-height: 14px; margin-top: 4px; }
+
+    /* подвал */
+    #foot {
+      max-width: 1000px; margin: 10px auto; padding: 6px 8px;
+      font-size: 10px; color: #777; border-top: 1px solid #ccc; text-align: center;
+    }
   </style>
 </head>
 <body>
-  <div id="join">
-    <h1>hit-meet</h1>
-    <input id="room" placeholder="Комната (a-z, 0-9, -, _)" autocomplete="off" />
-    <input id="name" placeholder="Ваше имя (необязательно)" autocomplete="off" />
-    <button id="joinBtn">Войти</button>
-    <div id="err"></div>
-  </div>
-
-  <div id="stage">
-    <div id="grid"></div>
-    <div id="bar">
-      <button id="micBtn" class="secondary">Mic: on</button>
-      <button id="camBtn" class="secondary">Cam: on</button>
-      <button id="shareBtn" class="secondary">Демонстрация</button>
-      <button id="goidaBtn" class="goida">ГОЙДА</button>
-      <button id="recBtn" class="secondary">Скачать 15с (wav)</button>
-      <button id="leaveBtn" class="danger">Выйти</button>
-      <span id="stats"></span>
+  <div id="masthead">
+    <img class="logoimg" src="./logo.png" alt="meetler" />
+    <div>
+      <div class="logo"><b>meetler</b> :: психоневрологический диспансер</div>
+      <div class="slogan">селф-хост WebRTC · анонимный вход · приём ведётся без записи и смс</div>
     </div>
   </div>
+
+  <div id="wrap">
+    <!-- форма входа как "создать раздачу" -->
+    <div id="join">
+      <div class="navbar">Вы здесь: <b>Приёмное отделение</b> » Поступить в палату</div>
+      <table class="forum">
+        <tr><th colspan="2">Госпитализация в палату</th></tr>
+        <tr>
+          <td class="label-cell">Палата №:</td>
+          <td><input id="room" class="f" placeholder="a-z, 0-9, -, _" autocomplete="off" /></td>
+        </tr>
+        <tr>
+          <td class="label-cell">Как представить:</td>
+          <td><input id="name" class="f" placeholder="необязательно (Наполеон и т.п.)" autocomplete="off" /></td>
+        </tr>
+        <tr>
+          <td class="label-cell">&nbsp;</td>
+          <td>
+            <button id="joinBtn" class="primary">» Поступить »</button>
+            <div id="err"></div>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- конференция -->
+    <div id="stage">
+      <div class="navbar">Вы здесь: <b>Отделение</b> » Палата № <span id="roomCrumb">...</span></div>
+      <div id="bar">
+        <button id="micBtn">Mic: on</button>
+        <button id="camBtn">Cam: on</button>
+        <button id="shareBtn">Демонстрация</button>
+        <button id="goidaBtn" class="goida">ГОЙДА</button>
+        <button id="recBtn">Скачать 15с (wav)</button>
+        <button id="leaveBtn" class="danger">Выписаться</button>
+        <span id="stats"></span>
+      </div>
+      <div id="grid"></div>
+    </div>
+  </div>
+
+  <div id="foot">meetler · главврач на обходе · powered by LiveKit · no cookies · no санитары · гойда</div>
 
   <script type="module" src="./app.js"></script>
 </body>

@@ -1,4 +1,4 @@
-# NixOS-модуль hit-meet.
+# NixOS-модуль meetler.
 #
 # Обёртка над официальным services.livekit + свой token-svc + reverse-proxy
 # (Caddy или nginx на выбор). Весь tuned-конфиг SFU в services.livekit.settings.
@@ -14,7 +14,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.services.hit-meet;
+  cfg = config.services.meetler;
   tokenSvc = self.packages.${pkgs.system}.token-svc;
   web = mkWeb pkgs;
 
@@ -26,8 +26,8 @@ let
   acmeChallengeRoot = "/var/lib/acme/acme-challenge";
 in
 {
-  options.services.hit-meet = {
-    enable = lib.mkEnableOption "hit-meet WebRTC conferencing";
+  options.services.meetler = {
+    enable = lib.mkEnableOption "meetler WebRTC conferencing";
 
     domain = lib.mkOption {
       type = lib.types.str;
@@ -198,8 +198,8 @@ in
       lib.mkIf cfg.enableTurn [ proxyGroup ];
 
     # --- token-svc ---
-    systemd.services.hit-meet-token = {
-      description = "hit-meet anonymous room-JWT issuer";
+    systemd.services.meetler-token = {
+      description = "meetler anonymous room-JWT issuer";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
       serviceConfig = {

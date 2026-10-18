@@ -1,4 +1,4 @@
-module hit-meet/token-svc
+module meetler/token-svc
 
 go 1.26
 

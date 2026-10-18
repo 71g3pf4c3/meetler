@@ -1,7 +1,7 @@
 { lib, buildGoModule }:
 
 buildGoModule {
-  pname = "hit-meet-token-svc";
+  pname = "meetler-token-svc";
   version = "0.1.0";
 
   src = lib.cleanSourceWith {
@@ -16,7 +16,7 @@ buildGoModule {
   ldflags = [ "-s" "-w" ];
 
   meta = with lib; {
-    description = "Anonymous room-JWT issuer for hit-meet (LiveKit)";
+    description = "Anonymous room-JWT issuer for meetler (LiveKit)";
     license = licenses.asl20;
     mainProgram = "token-svc";
   };
