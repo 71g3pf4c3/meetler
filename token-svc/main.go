@@ -193,14 +193,22 @@ func main() {
 	mux.HandleFunc("/api/token", cfg.handleToken)
 	mux.HandleFunc("/healthz", cfg.handleHealth)
 
+	// глобальный soundboard: загрузка/листинг/отдача звуков
+	sb, err := newSoundboard(getEnv("SOUNDS_DIR", "/data/sounds"))
+	if err != nil {
+		log.Fatalf("soundboard init: %v", err)
+	}
+	sb.routes(mux)
+
 	srv := &http.Server{
 		Addr:              cfg.listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// ReadTimeout побольше: upload звука (до 5MiB) по медленному аплинку.
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
-	log.Printf("token-svc listening on %s (ttl=%s, room_max=%d)", cfg.listen, cfg.ttl, cfg.roomMax)
+	log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=%s)", cfg.listen, cfg.ttl, cfg.roomMax, sb.dir)
 	log.Fatal(srv.ListenAndServe())
 }

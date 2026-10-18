@@ -7,7 +7,7 @@ import {
   VideoPresets,
   LocalAudioTrack,
   createLocalScreenTracks,
-} from './vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
+} from '/vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
 
 const $ = (id) => document.getElementById(id);
 const grid = $('grid');
@@ -96,13 +96,24 @@ function detachTrack(track) {
   track.detach().forEach((el) => el.remove());
 }
 
+// палата из URL-пути: /<palata> (как jitsi meet.jit.si/room). '' если корень.
+function palataFromPath() {
+  const seg = decodeURIComponent(location.pathname.replace(/^\/+|\/+$/g, ''));
+  return /^[a-zA-Z0-9_-]{1,64}$/.test(seg) ? seg : '';
+}
+
 async function join() {
   $('err').textContent = '';
-  const roomName = $('room').value.trim();
+  // палата из URL имеет приоритет; иначе из поля формы
+  const roomName = palataFromPath() || $('room').value.trim();
   const name = $('name').value.trim();
   if (!roomName) {
     $('err').textContent = 'Укажите номер палаты';
     return;
+  }
+  // зафиксировать палату в URL (чтобы ссылку можно было расшарить)
+  if (palataFromPath() !== roomName) {
+    history.replaceState(null, '', '/' + encodeURIComponent(roomName));
   }
   // getUserMedia доступен только в secure context (https или localhost).
   // По http на IP/домене navigator.mediaDevices === undefined → нет запроса доступа.
@@ -194,6 +205,7 @@ async function join() {
     $('stage').style.display = 'block';
     const crumb = $('roomCrumb');
     if (crumb) crumb.textContent = roomName;
+    refreshSoundboard();
     startStats();
   } catch (e) {
     $('err').textContent = 'Ошибка входа: ' + (e.message || e);
@@ -261,6 +273,24 @@ function attachLocalVideo(track) {
 // controls
 $('joinBtn').onclick = join;
 $('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+$('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+
+// URL-резолв палаты (как jitsi): /<palata> → при входе спрашиваем только ник.
+(function initFromUrl() {
+  const palata = palataFromPath();
+  if (palata) {
+    // прячем строку выбора палаты, оставляем только ник
+    const roomInput = $('room');
+    const row = roomInput.closest('tr');
+    if (row) row.style.display = 'none';
+    roomInput.value = palata;
+    const crumb = $('roomCrumb');
+    if (crumb) crumb.textContent = palata;
+    document.title = `meetler :: палата ${palata}`;
+    const nameInput = $('name');
+    if (nameInput) setTimeout(() => nameInput.focus(), 50);
+  }
+})();
 
 $('micBtn').onclick = async () => {
   const enabled = room.localParticipant.isMicrophoneEnabled;
@@ -280,60 +310,109 @@ $('shareBtn').onclick = async () => {
     $('err').textContent = 'Демонстрация отменена: ' + e.message;
   }
 };
-// --- ГОЙДА: проиграть mp3 для всех в комнате ---
-let goidaCtx = null;
-let goidaBuffer = null;
-let goidaTrack = null;      // опубликованный LocalAudioTrack
-let goidaPub = null;        // publication для unpublish
-let goidaPlaying = false;
+// --- Soundboard: проиграть звук по URL для ВСЕХ в палате (как ГОЙДА) ---
+let sfxCtx = null;
+const sfxCache = new Map();   // url -> decoded AudioBuffer
+let sfxBusy = false;          // не наслаиваем звуки друг на друга
 
-async function loadGoida() {
-  if (goidaBuffer) return;
-  goidaCtx = goidaCtx || new (window.AudioContext || window.webkitAudioContext)();
-  const res = await fetch('./goida.mp3');
-  const buf = await res.arrayBuffer();
-  goidaBuffer = await goidaCtx.decodeAudioData(buf);
+async function loadBuffer(url) {
+  if (sfxCache.has(url)) return sfxCache.get(url);
+  sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('fetch ' + res.status);
+  const buf = await sfxCtx.decodeAudioData(await res.arrayBuffer());
+  sfxCache.set(url, buf);
+  return buf;
 }
 
-$('goidaBtn').onclick = async () => {
-  if (!room) return;
-  if (goidaPlaying) return;  // не запускать поверх играющего
+// проигрывает url: публикует в палату (слышат все) + локально + в запись 15с.
+async function playUrlToRoom(url, btnEl) {
+  if (!room || sfxBusy) return;
+  sfxBusy = true;
+  if (btnEl) btnEl.classList.add('playing');
+  let pub = null, track = null;
   try {
-    await loadGoida();
-    if (goidaCtx.state === 'suspended') await goidaCtx.resume();
+    const buffer = await loadBuffer(url);
+    if (sfxCtx.state === 'suspended') await sfxCtx.resume();
 
-    // граф: buffer -> gain -> [dest для публикации] + [speakers локально]
-    const src = goidaCtx.createBufferSource();
-    src.buffer = goidaBuffer;
-    const dest = goidaCtx.createMediaStreamDestination();
-    src.connect(dest);              // в комнату
-    src.connect(goidaCtx.destination); // себе в колонки
+    const src = sfxCtx.createBufferSource();
+    src.buffer = buffer;
+    const dest = sfxCtx.createMediaStreamDestination();
+    src.connect(dest);               // в палату
+    src.connect(sfxCtx.destination); // себе в колонки
 
-    // публикуем аудио-трек в комнату — слышат все
     const mst = dest.stream.getAudioTracks()[0];
-    addToRecordMix(mst);            // ГОЙДА попадает в запись 15с
-    goidaTrack = new LocalAudioTrack(mst);
-    goidaPub = await room.localParticipant.publishTrack(goidaTrack, {
-      name: 'goida',
-      source: Track.Source.Unknown,
+    addToRecordMix(mst);             // попадает в запись 15с
+    track = new LocalAudioTrack(mst);
+    pub = await room.localParticipant.publishTrack(track, {
+      name: 'sfx', source: Track.Source.Unknown,
     });
 
-    goidaPlaying = true;
-    $('goidaBtn').classList.add('playing');
-
-    src.onended = async () => {
-      goidaPlaying = false;
-      $('goidaBtn').classList.remove('playing');
-      try {
-        if (goidaPub) await room.localParticipant.unpublishTrack(goidaTrack);
-      } catch (_) {}
-      goidaTrack = null; goidaPub = null;
-    };
-    src.start();
+    await new Promise((resolve) => { src.onended = resolve; src.start(); });
+    await new Promise((r) => setTimeout(r, 300)); // хвост для подписчиков
   } catch (e) {
-    $('err').textContent = 'ГОЙДА не удалась: ' + (e.message || e);
-    goidaPlaying = false;
-    $('goidaBtn').classList.remove('playing');
+    $('err').textContent = 'Звук не удался: ' + (e.message || e);
+  } finally {
+    try { if (pub) await room.localParticipant.unpublishTrack(track); } catch (_) {}
+    if (btnEl) btnEl.classList.remove('playing');
+    sfxBusy = false;
+  }
+}
+
+// ГОЙДА = просто первая кнопка soundboard на встроенный goida.mp3
+$('goidaBtn').onclick = () => playUrlToRoom('/goida.mp3', $('goidaBtn'));
+
+// --- панель soundboard: список кнопок с сервера + загрузка ---
+async function refreshSoundboard() {
+  const box = $('sbBtns');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/sounds');
+    // пустой список приходит как JSON null (Go nil slice)
+    const sounds = (await res.json()) || [];
+    box.innerHTML = '';
+    box.classList.remove('empty');
+    if (!sounds.length) {
+      box.classList.add('empty');
+      box.textContent = 'аптечка пуста — залей первый звук кнопкой ниже';
+      return;
+    }
+    for (const s of sounds) {
+      const b = document.createElement('button');
+      b.className = 'sfx';
+      b.textContent = s.label;
+      b.title = s.label;
+      b.onclick = () => playUrlToRoom(s.url, b);
+      box.appendChild(b);
+    }
+  } catch (_) { /* soundboard опционален */ }
+}
+
+async function uploadSound(file, label) {
+  const fd = new FormData();
+  fd.append('file', file);
+  if (label) fd.append('label', label);
+  const res = await fetch('/api/sounds', { method: 'POST', body: fd });
+  if (!res.ok) throw new Error((await res.text()) || res.status);
+}
+
+// загрузка: скрытый file input за кнопкой (клиентские pre-checks = быстрый фидбек)
+$('sbUploadBtn').onclick = () => $('sbFile').click();
+$('sbFile').onchange = async () => {
+  const f = $('sbFile').files[0];
+  $('sbFile').value = ''; // разрешить повторный выбор того же файла
+  const sbErr = $('sbErr');
+  if (sbErr) sbErr.textContent = '';
+  if (!f) return;
+  try {
+    if (f.size > 2 * 1024 * 1024) throw new Error('больше 2 МБ — не влезет');
+    if (!/\.(mp3|ogg|oga|wav|m4a|webm|opus)$/i.test(f.name)) {
+      throw new Error('разрешены mp3/ogg/wav/m4a/webm/opus');
+    }
+    await uploadSound(f);
+    await refreshSoundboard();
+  } catch (e) {
+    if (sbErr) sbErr.textContent = 'Загрузка не удалась: ' + (e.message || e);
   }
 };
 

@@ -4,10 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>meetler :: палата №6</title>
-  <link rel="icon" type="image/png" href="./logo.png" />
+  <link rel="icon" type="image/png" href="/logo.png" />
   <!-- preload: тянем тяжёлый livekit-client параллельно с парсингом HTML -->
-  <link rel="modulepreload" href="./vendor/livekit-client.esm.mjs" />
-  <link rel="preload" as="script" href="./app.js" crossorigin />
+  <link rel="modulepreload" href="/vendor/livekit-client.esm.mjs" />
+  <link rel="preload" as="script" href="/app.js" crossorigin />
   <style>
     /* UI в стиле старых форумов (rutracker / 4chan): таблицы, Verdana, бежевый фон. */
     * { box-sizing: border-box; }
@@ -83,6 +83,16 @@
       50% { background: #ff6a00; color: #fff; }
     }
 
+    /* soundboard: кнопки в том же "гойда"-стиле */
+    button.sfx {
+      font-weight: bold; color: #800000; letter-spacing: 1px;
+      background: #ffe08a; border-color: #b8860b #7a5a08 #7a5a08 #b8860b;
+    }
+    button.sfx.playing { animation: goidaBlink .4s steps(1) infinite; }
+    #sbBtns { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+    #sbBtns.empty { display: block; color: #777; font-size: 11px; }
+    #sbErr { color: #a00; font-size: 11px; min-height: 0; }
+
     /* конференция */
     #stage { display: none; }
     #bar {
@@ -112,7 +122,7 @@
     /* плейсхолдер при выключенной камере — дефолтная аватарка */
     .tile .ph {
       width: 100%; height: 100%;
-      background: #1a1a1a url('./avatar.jpg') center/cover no-repeat;
+      background: #1a1a1a url('/avatar.jpg') center/cover no-repeat;
     }
 
     #err { color: #a00; font-size: 11px; min-height: 14px; margin-top: 4px; }
@@ -126,7 +136,7 @@
 </head>
 <body>
   <div id="masthead">
-    <img class="logoimg" src="./logo.png" alt="meetler" />
+    <img class="logoimg" src="/logo.png" alt="meetler" />
     <div>
       <div class="logo"><b>meetler</b> :: психоневрологический диспансер</div>
       <div class="slogan">селф-хост WebRTC · анонимный вход · приём ведётся без записи и смс</div>
@@ -170,11 +180,25 @@
         <span id="stats"></span>
       </div>
       <div id="grid"></div>
+
+      <!-- soundboard: любой пациент может залить звук, каждый становится кнопкой -->
+      <table class="forum" id="soundboard">
+        <tr><th>Звуковая аптечка — нажатие слышит вся палата</th></tr>
+        <tr>
+          <td>
+            <div id="sbBtns"></div>
+            <button id="sbUploadBtn">+ залить звук (mp3/ogg/wav/m4a/webm/opus, до 2 МБ)</button>
+            <input type="file" id="sbFile" hidden
+                   accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
+            <div id="sbErr"></div>
+          </td>
+        </tr>
+      </table>
     </div>
   </div>
 
   <div id="foot">meetler · главврач на обходе · powered by LiveKit · no cookies · no санитары · гойда</div>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>
