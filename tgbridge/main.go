@@ -38,6 +38,17 @@ import (
 // сообщения анонимных админов группы (скрытых за маской группы).
 const groupAnonymousBotID = 1087968824
 
+// Лимиты длительности (сек):
+//
+//	maxUploadSec — то, что принимаем от юзера (voice/video/... из Telegram,
+//	               длительность известна из метаданных сообщения, без probe).
+//	maxPlaySec   — жёсткий потолок проигрывания в палате: всё, что длиннее,
+//	               обрезается на транскоде (ffmpeg -t), включая TTS.
+const (
+	maxUploadSec = 10
+	maxPlaySec   = 15
+)
+
 type config struct {
 	botToken   string
 	lkURL      string
@@ -98,9 +109,41 @@ func (s *palataStore) set(uid int64, v string) {
 // валидный номер палаты = имя комнаты livekit (как в token-svc)
 var palataRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
-// извлечь палату из текста: "#6" или "/palata 6" / "/room 6"
+// извлечь палату из текста/подписи: "#6" или "/palata 6" / "/room 6"
+// (в группах команда приходит с @суффиксом: "/palata@bot 6" — терпим).
 var hashRe = regexp.MustCompile(`#([a-zA-Z0-9_-]{1,64})`)
-var cmdRe = regexp.MustCompile(`(?i)^/(?:palata|room)\s+([a-zA-Z0-9_-]{1,64})`)
+var cmdRe = regexp.MustCompile(`(?i)^/(?:palata|room)(?:@[A-Za-z0-9_]+)?\s+([a-zA-Z0-9_-]{1,64})`)
+
+// parseCommand разбирает "/cmd@addressee arg..." (Telegram в группах шлёт
+// команды с @суффиксом бота). addressee — кому адресована команда ("", если всем).
+var cmdParseRe = regexp.MustCompile(`^/([a-zA-Z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s+(.*))?$`)
+
+func parseCommand(text string) (cmd, addressee, arg string, ok bool) {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, "/") {
+		return "", "", "", false
+	}
+	mm := cmdParseRe.FindStringSubmatch(t)
+	if mm == nil {
+		return "", "", "", false
+	}
+	return mm[1], mm[2], strings.TrimSpace(mm[3]), true
+}
+
+func (a *app) helpText() string {
+	return "meetler — мост в палату 🏥\n\n" +
+		"• Голосовое / аудио / видео / кружок → проиграю всем в палате (до " +
+		fmt.Sprint(maxUploadSec) + " сек).\n" +
+		"• Текст с @упоминанием меня ИЛИ (в личке) с #палатой → озвучу (piper TTS).\n" +
+		"• Палата: #6 или /palata 6 в сообщении/подписи; запомнить свою: /palata 6;\n" +
+		"  посмотреть текущую: /palata; по умолчанию: " + a.cfg.defPalata + ".\n\n" +
+		"В группах я реагирую только на адресованные мне сообщения: @упоминание,\n" +
+		"реплай на моё сообщение или #палата в подписи к медиа. Чтобы я вообще\n" +
+		"видел медиа, я должен быть админом группы или с выключенным privacy mode\n" +
+		"(@BotFather → /setprivacy → Disable).\n\n" +
+		"Всё проигрываемое — не длиннее " + fmt.Sprint(maxPlaySec) + " сек.\n" +
+		"/help — эта справка."
+}
 
 func palataFromText(s string) string {
 	if m := cmdRe.FindStringSubmatch(strings.TrimSpace(s)); m != nil {
@@ -134,6 +177,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("getMe: %v", err)
 	}
+
+	// меню команд в UI Telegram (кнопка "/" рядом с полем ввода).
+	// Best-effort: неудача не критична.
+	_ = bot.SetMyCommands(ctx, &telego.SetMyCommandsParams{
+		Commands: []telego.BotCommand{
+			{Command: "help", Description: "Справка: медиа и TTS в палату"},
+			{Command: "palata", Description: "Показать или задать палату: /palata 6"},
+		},
+	})
 
 	a := &app{
 		cfg:   cfg,
@@ -219,16 +271,44 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 	caption := m.Caption
 	text := m.Text
 
-	// команда установки палаты: "/palata 6" без медиа -> запомнить и выйти
+	// контекст чата: группа и "адресованность" боту
+	isGroup := m.Chat.Type == telego.ChatTypeGroup || m.Chat.Type == telego.ChatTypeSupergroup
+	replyToBot := m.ReplyToMessage != nil && m.ReplyToMessage.From != nil &&
+		m.ReplyToMessage.From.ID == a.meID
+	mentioned := a.me != "" && strings.Contains(strings.ToLower(text+" "+caption), "@"+a.me)
+
+	// --- команды (только чистый текст, без медиа) ---
 	if text != "" && m.Voice == nil && m.Audio == nil && m.Video == nil && m.VideoNote == nil {
-		if p := cmdRe.FindStringSubmatch(strings.TrimSpace(text)); p != nil {
-			a.store.set(uid, p[1])
-			a.reply(ctx, m.Chat.ID, "Палата запомнена: "+p[1])
-			return
+		if cmd, addressee, arg, ok := parseCommand(text); ok {
+			if addressee != "" && addressee != a.me {
+				return // команда адресована другому боту — молча пропускаем
+			}
+			switch strings.ToLower(cmd) {
+			case "start", "help":
+				a.reply(ctx, m.Chat.ID, a.helpText())
+				return
+			case "palata", "room":
+				if arg == "" {
+					a.reply(ctx, m.Chat.ID, "Текущая палата: "+a.store.get(uid, a.cfg.defPalata))
+					return
+				}
+				if !palataRe.MatchString(arg) {
+					a.reply(ctx, m.Chat.ID, "Неверный номер палаты: только a-z, 0-9, -, _ (до 64 символов).")
+					return
+				}
+				a.store.set(uid, arg)
+				a.reply(ctx, m.Chat.ID, "Палата запомнена: "+arg)
+				return
+			}
+			// неизвестная команда: в личке подскажем, в группе молчим (шумно)
+			if !isGroup {
+				a.reply(ctx, m.Chat.ID, "Не знаю такой команды. /help — справка.")
+				return
+			}
 		}
 	}
 
-	// определить палату: явная в тексте/подписи -> сохранённая -> дефолт
+	// --- палата: явная в тексте/подписи -> сохранённая -> дефолт ---
 	palata := palataFromText(caption)
 	if palata == "" {
 		palata = palataFromText(text)
@@ -243,18 +323,35 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 
 	// --- медиа ---
 	var fileID string
+	var dur int
 	switch {
 	case m.Voice != nil:
 		fileID = m.Voice.FileID
+		dur = m.Voice.Duration
 	case m.Audio != nil:
 		fileID = m.Audio.FileID
+		dur = m.Audio.Duration
 	case m.VideoNote != nil:
 		fileID = m.VideoNote.FileID
+		dur = m.VideoNote.Duration
 	case m.Video != nil:
 		fileID = m.Video.FileID
+		dur = m.Video.Duration
 	}
 
 	if fileID != "" {
+		// групповой этикет: играем только АДРЕСОВАННОЕ боту медиа —
+		// @упоминание, реплай на сообщение бота или явная #палата в подписи.
+		// Иначе (при выключенном privacy) бот hijack'ает каждое голосовое чата.
+		if isGroup && !mentioned && !replyToBot && palataFromText(caption) == "" {
+			return
+		}
+		if dur > maxUploadSec {
+			a.reply(ctx, m.Chat.ID, fmt.Sprintf(
+				"Слишком длинная запись: %d сек (максимум %d). Обрежь и пришли короче.",
+				dur, maxUploadSec))
+			return
+		}
 		isVideo := m.VideoNote != nil || m.Video != nil
 		if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
 			log.Printf("streamFile: %v", err)
@@ -265,11 +362,11 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 		return
 	}
 
-	// --- текст: озвучить, если упомянут бот (@bot) или задана #палата ---
+	// --- текст: озвучить, если упомянут бот (@) ИЛИ (в личке) есть #палата.
+	// В группах #хэштеги — обычное дело, сами по себе TTS не триггерят.
 	if text != "" {
-		mentioned := a.me != "" && strings.Contains(strings.ToLower(text), "@"+a.me)
 		hasHash := hashRe.MatchString(text)
-		if mentioned || hasHash {
+		if mentioned || replyToBot || (!isGroup && hasHash) {
 			if !a.tts.enabled() {
 				a.reply(ctx, m.Chat.ID, "TTS выключен (нет piper).")
 				return

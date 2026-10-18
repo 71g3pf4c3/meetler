@@ -11,6 +11,9 @@ import (
 
 // ffmpeg-транскод во временные файлы. Форматы заточены под lksdk.NewLocalFileTrack:
 //   аудио -> .ogg (opus), видео -> .ivf (vp8) + отдельный .ogg (opus).
+//
+// ВСЕ выходы режутся до maxPlaySec: в палату не льётся ничего длиннее 15с
+// (TTS-простыни, случайно длинные медиа — обрежутся, а не займут эфир).
 
 const ffTimeout = 2 * time.Minute
 
@@ -25,15 +28,17 @@ func run(ctx context.Context, name string, args ...string) error {
 	return nil
 }
 
-// toOgg перекодирует любой аудио/контейнер в чистый ogg/opus 48k mono.
-// Для TG voice (уже opus) это дешёвый remux+resample, не теряем качество зря.
+// toOgg перекодирует любой аудио/контейнер в чистый ogg/opus 48k mono,
+// не длиннее maxPlaySec. Для TG voice (уже opus) это дешёвый remux+resample.
 func toOgg(ctx context.Context, src, dstDir string) (string, error) {
 	dst := filepath.Join(dstDir, "audio.ogg")
 	err := run(ctx, "ffmpeg", "-y", "-i", src,
 		"-vn",
 		"-ac", "1", "-ar", "48000",
 		"-c:a", "libopus", "-b:a", "24k",
-		"-f", "ogg", dst,
+		"-f", "ogg",
+		"-t", fmt.Sprint(maxPlaySec),
+		dst,
 	)
 	if err != nil {
 		return "", err
@@ -47,22 +52,27 @@ func toVideo(ctx context.Context, src, dstDir string) (ivf, ogg string, err erro
 	ivf = filepath.Join(dstDir, "video.ivf")
 	ogg = filepath.Join(dstDir, "video.ogg")
 
-	// видео -> VP8 IVF
+	// видео -> VP8 IVF (не длиннее maxPlaySec)
 	if err = run(ctx, "ffmpeg", "-y", "-i", src,
 		"-an",
 		"-c:v", "libvpx", "-b:v", "500k",
 		"-vf", "scale=-2:360", "-r", "25",
 		"-deadline", "realtime", "-cpu-used", "8",
-		"-f", "ivf", ivf,
+		"-f", "ivf",
+		"-t", fmt.Sprint(maxPlaySec),
+		ivf,
 	); err != nil {
 		return "", "", fmt.Errorf("video->ivf: %w", err)
 	}
 
-	// аудио дорожка (если есть) -> ogg/opus. Если звука нет — пустой тихий трек.
+	// аудио дорожка (если есть) -> ogg/opus, тот же потолок. Если звука нет —
+	// пустой тихий трек.
 	if err = run(ctx, "ffmpeg", "-y", "-i", src,
 		"-vn", "-ac", "1", "-ar", "48000",
 		"-c:a", "libopus", "-b:a", "24k",
-		"-f", "ogg", ogg,
+		"-f", "ogg",
+		"-t", fmt.Sprint(maxPlaySec),
+		ogg,
 	); err != nil {
 		// видео без звука — делаем тишину на длину видео
 		if silErr := silentOgg(ctx, ivf, ogg); silErr != nil {

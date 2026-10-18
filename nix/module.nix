@@ -25,6 +25,37 @@ let
   # webserver использует useACMEHost (не управляет ACME сам), challenge — через webroot.
   acmeDir = "/var/lib/acme/${cfg.domain}";
   acmeChallengeRoot = "/var/lib/acme/acme-challenge";
+
+  # Русские голоса piper (rhasspy/piper-voices, ru_RU-<voice>-medium).
+  # Модель + конфиг должны лежать рядом: piper ищет <model>.onnx.json.
+  piperVoices = lib.mapAttrs (voice: hashes: pkgs.runCommand "meetler-piper-${voice}" { } ''
+    mkdir -p $out
+    ln -s ${pkgs.fetchurl {
+      url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/${voice}/medium/ru_RU-${voice}-medium.onnx";
+      sha256 = hashes.model;
+    }} $out/voice.onnx
+    ln -s ${pkgs.fetchurl {
+      url = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/${voice}/medium/ru_RU-${voice}-medium.onnx.json";
+      sha256 = hashes.config;
+    }} $out/voice.onnx.json
+  '') {
+    dmitri = {
+      model = "sha256-8HM1brxL0PgMWvWN8pU6WYi9W9qx6zhjXOlgsHH778s=";
+      config = "sha256-Zn7zEXvGQsKJLf92kNi9yMpCKK6qeDstwUFt9jKFXg0=";
+    };
+    irina = {
+      model = "sha256-j/OCEtI9owC743BcZF5uW5R18L/eAVWOsXgT4irKqqo=";
+      config = "sha256-wuwouzjitZ6TuVmz5ANIwa/rvScvMP7V1BIF0I6Yqdc=";
+    };
+    ruslan = {
+      model = "sha256-cqX4jgsgkoBk60XYjh2qIfivYtGGE1gNMsu0rtSNz38=";
+      config = "sha256-cGpPsXvDBKvQeAm1Ut6uYV5k3L/7+9CYVLo3ylnogRc=";
+    };
+  };
+
+  # выбранный голос (деривация) или null
+  piperVoice = if cfg.telegram.piperVoice == null then null
+    else piperVoices.${cfg.telegram.piperVoice};
 in
 {
   options.services.meetler = {
@@ -139,6 +170,15 @@ in
         description = ''
           Путь к piper .onnx модели для озвучки текста (@бот/#палата).
           null = TTS выключен (медиа всё равно работает).
+          Взаимоисключим с piperVoice.
+        '';
+      };
+      piperVoice = lib.mkOption {
+        type = lib.types.nullOr (lib.types.enum [ "dmitri" "irina" "ruslan" ]);
+        default = null;
+        description = ''
+          Русский голос piper — модель (ru_RU-<voice>-medium) скачивается
+          автоматически в nix store при сборке системы. Взаимоисключим с piperModel.
         '';
       };
     };
@@ -151,6 +191,10 @@ in
         assertion = !cfg.telegram.enable
           || (cfg.telegram.botToken != null) != (cfg.telegram.environmentFile != null);
         message = "services.meetler.telegram: задай РОВНО одно — telegram.botToken (прямо) ИЛИ telegram.environmentFile (файл).";
+      }
+      {
+        assertion = cfg.telegram.piperVoice == null || cfg.telegram.piperModel == null;
+        message = "services.meetler.telegram: задай ЛИБО piperVoice (авто-модель из nix store), ЛИБО piperModel (свой путь).";
       }
     ];
 
@@ -256,8 +300,13 @@ in
           "LISTEN_ADDR=127.0.0.1:8080"
           "TOKEN_TTL=${cfg.tokenTTL}"
           "ROOM_MAX_PARTICIPANTS=${toString cfg.roomMaxParticipants}"
+          # список открытых палат (/api/rooms): livekit на том же хосте
+          "LIVEKIT_URL=ws://127.0.0.1:7880"
+          # soundboard: персистентное хранилище звуков (DynamicUser-friendly)
+          "SOUNDS_DIR=/var/lib/meetler/sounds"
         ];
         DynamicUser = true;
+        StateDirectory = "meetler";
         Restart = "on-failure";
         RestartSec = "2s";
         # hardening
@@ -291,7 +340,8 @@ in
           "DEFAULT_PALATA=${cfg.telegram.defaultPalata}"
         ] ++ lib.optional (cfg.telegram.botToken != null) "TELEGRAM_BOT_TOKEN=${cfg.telegram.botToken}"
           ++ lib.optional (cfg.telegram.piperModel != null) "PIPER_MODEL=${cfg.telegram.piperModel}"
-          ++ lib.optional (cfg.telegram.piperModel != null) "PIPER_BIN=${pkgs.piper-tts}/bin/piper";
+          ++ lib.optional (piperVoice != null) "PIPER_MODEL=${piperVoice}/voice.onnx"
+          ++ lib.optional (cfg.telegram.piperModel != null || piperVoice != null) "PIPER_BIN=${pkgs.piper-tts}/bin/piper";
         DynamicUser = true;
         Restart = "on-failure";
         RestartSec = "5s";
