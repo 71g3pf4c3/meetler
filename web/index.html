@@ -88,9 +88,35 @@
     #sbBtns { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
     #sbBtns.empty { display: block; color: #777; font-size: 11px; }
     #sbErr { color: #a00; font-size: 11px; min-height: 0; }
+    /* строка звука: кнопка + крестик удаления */
+    .sfxrow { display: inline-flex; align-items: stretch; }
+    .sfxrow button.sfxdel {
+      padding: 0 4px; font-size: 11px; color: #800000;
+      background: #e6c9c9; border-color: #a00;
+    }
+    /* ползунок индивидуальной громкости (только у себя) */
+    #sbVolRow { font-size: 11px; color: #4a3b1a; margin-left: 12px; }
+    #sbVol { vertical-align: middle; width: 110px; }
 
     /* приёмное отделение: картинка-баннер */
     .priem img { width: 100%; height: auto; display: block; }
+
+    /* галерея портретов */
+    #avatars .cnt { color: #4a3b1a; font-size: 11px; }
+    #avatarErr { color: #a00; font-size: 11px; min-height: 0; }
+    #avatarThumbs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    #avatarThumbs .thumb {
+      position: relative; width: 56px; height: 56px;
+      border: 1px solid #a0a0a0; background: #1a1a1a;
+    }
+    #avatarThumbs .thumb img {
+      width: 100%; height: 100%; object-fit: cover; display: block;
+    }
+    #avatarThumbs .thumb button {
+      position: absolute; top: -1px; right: -1px;
+      padding: 0 3px; font-size: 11px; line-height: 14px;
+      background: #e6c9c9; border: 1px solid #a00; color: #800000;
+    }
 
     /* список открытых палат */
     #roomsBody a { font-weight: bold; }
@@ -177,6 +203,23 @@
         </tr>
       </table>
 
+      <!-- пул аватарок: каждый пациент получает случайную из галереи -->
+      <table class="forum" id="avatars">
+        <tr><th colspan="2">Галерея портретов</th></tr>
+        <tr>
+          <td class="label-cell">В галерее:</td>
+          <td>
+            <span class="cnt" id="avatarCount">0</span> портретов — каждому
+            пациенту достаётся случайный при поступлении.
+            <button id="avatarUploadBtn">+ принести портрет (jpg/png/gif/webp, до 4 МБ)</button>
+            <input type="file" id="avatarFile" hidden
+                   accept=".jpg,.jpeg,.png,.gif,.webp" />
+            <div id="avatarThumbs"></div>
+            <div id="avatarErr"></div>
+          </td>
+        </tr>
+      </table>
+
       <!-- список открытых палат (живой, из LiveKit) -->
       <table class="forum">
         <tr><th colspan="3">Открытые палаты</th></tr>
@@ -211,6 +254,7 @@
           <td>
             <div id="sbBtns"></div>
             <button id="sbUploadBtn">+ залить звук (mp3/ogg/wav/m4a/webm/opus, до 2 МБ)</button>
+            <span id="sbVolRow">громкость у себя: <input type="range" id="sbVol" min="0" max="100" value="100" /></span>
             <input type="file" id="sbFile" hidden
                    accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
             <div id="sbErr"></div>

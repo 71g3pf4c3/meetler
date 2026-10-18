@@ -230,6 +230,33 @@ func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, id, time.Now(), f)
 }
 
+// DELETE /api/sounds/<id> -> удалить звук из аптечки. Без авторизации:
+// что "лишнее" решает любой пациент (как в галерее портретов).
+// id — серверный рандом, не пользовательская строка.
+func (sb *soundboard) remove(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/sounds/")
+	if id == "" || id != filepath.Base(id) {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if _, ok := soundExt[strings.ToLower(filepath.Ext(id))]; !ok {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	if err := os.Remove(filepath.Join(sb.dir, id)); err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "remove", http.StatusInternalServerError)
+		return
+	}
+	_ = os.Remove(filepath.Join(sb.dir, id+".meta")) // метаданные следом
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // routes регистрирует хендлеры soundboard на mux.
 func (sb *soundboard) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/sounds", func(w http.ResponseWriter, r *http.Request) {
@@ -242,5 +269,14 @@ func (sb *soundboard) routes(mux *http.ServeMux) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
-	mux.HandleFunc("/api/sounds/", sb.serve) // /api/sounds/<id>
+	mux.HandleFunc("/api/sounds/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			sb.serve(w, r)
+		case http.MethodDelete:
+			sb.remove(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 }

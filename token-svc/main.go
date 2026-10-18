@@ -215,6 +215,20 @@ func main() {
 		sb.routes(mux)
 	}
 
+	// пул аватарок: та же деградация — 503 на /api/avatars* без падения сервиса.
+	av, avErr := newAvatarStore(getEnv("AVATARS_DIR", "/data/avatars"))
+	if avErr != nil {
+		log.Printf("WARNING: avatars disabled: %v (token issuing still works)", avErr)
+		mux.HandleFunc("/api/avatars", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "avatars disabled", http.StatusServiceUnavailable)
+		})
+		mux.HandleFunc("/api/avatars/", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "avatars disabled", http.StatusServiceUnavailable)
+		})
+	} else {
+		av.routes(mux)
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.listen,
 		Handler:           mux,
@@ -228,6 +242,9 @@ func main() {
 		log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=OFF)", cfg.listen, cfg.ttl, cfg.roomMax)
 	} else {
 		log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=%s)", cfg.listen, cfg.ttl, cfg.roomMax, sb.dir)
+	}
+	if avErr == nil {
+		log.Printf("avatars: %s", av.dir)
 	}
 	log.Fatal(srv.ListenAndServe())
 }

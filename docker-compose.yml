@@ -47,12 +47,14 @@ services:
       ROOM_MAX_PARTICIPANTS: ${ROOM_MAX_PARTICIPANTS:-30}
       LISTEN_ADDR: ":8080"
       SOUNDS_DIR: /data/sounds
+      AVATARS_DIR: /data/avatars
       # список открытых палат (/api/rooms): livekit в host-network. ХАРДКОД
       # host.docker.internal (НЕ ${LIVEKIT_URL} из .env — тот указывает на
       # 127.0.0.1 для tgbridge в host-network и внутри контейнера бьёт мимо).
       LIVEKIT_URL: ws://host.docker.internal:7880
     volumes:
       - sounds:/data/sounds        # глобальный soundboard, переживает рестарт
+      - avatars:/data/avatars      # пул аватарок
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks: [internal]
@@ -108,3 +110,4 @@ volumes:
   caddy_data:
   caddy_config:
   sounds:
+  avatars:

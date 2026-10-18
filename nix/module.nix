@@ -304,6 +304,8 @@ in
           "LIVEKIT_URL=ws://127.0.0.1:7880"
           # soundboard: персистентное хранилище звуков (DynamicUser-friendly)
           "SOUNDS_DIR=/var/lib/meetler/sounds"
+          # пул аватарок: рядом, в том же StateDirectory
+          "AVATARS_DIR=/var/lib/meetler/avatars"
         ];
         DynamicUser = true;
         StateDirectory = "meetler";

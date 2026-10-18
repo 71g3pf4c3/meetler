@@ -36,11 +36,14 @@ function ensureTile(participant) {
   if (t) return t;
   const el = document.createElement('div');
   el.className = 'tile';
+  el.dataset.sid = participant.sid; // по нему вешается аватарка из пула
   const label = document.createElement('div');
   label.className = 'label';
   label.textContent = participant.name || participant.identity;
   const ph = document.createElement('div');
-  ph.className = 'ph';   // фон = дефолтная аватарка (CSS)
+  ph.className = 'ph'; // фон = аватарка (из пула или дефолтная из CSS)
+  const u = avatarUrlFor(participant.sid);
+  if (u) ph.style.backgroundImage = `url(${u})`;
   el.appendChild(ph);
   el.appendChild(label);
   grid.appendChild(el);
@@ -203,6 +206,7 @@ async function join() {
 
     $('join').style.display = 'none';
     $('stage').style.display = 'block';
+    ensureLocalTile(); // свой тайл с аватаркой, даже если камеры нет
     const crumb = $('roomCrumb');
     if (crumb) crumb.textContent = roomName;
     refreshSoundboard();
@@ -249,18 +253,33 @@ function wireRoomEvents(r) {
 }
 
 let localTile = null;
+
+// локальный тайл: создаётся СРАЗУ после входа (с аватаркой из пула), видео
+// подменяет фон когда включается. Раньше без камеры своего тайла не было.
+function ensureLocalTile() {
+  if (localTile) return localTile;
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.dataset.sid = room.localParticipant.sid;
+  const label = document.createElement('div');
+  label.className = 'label';
+  const myName = (room && room.localParticipant && room.localParticipant.name) || 'Вы';
+  label.textContent = `${myName} (вы)`;
+  const ph = document.createElement('div');
+  ph.className = 'ph';
+  const u = avatarUrlFor(room.localParticipant.sid);
+  if (u) ph.style.backgroundImage = `url(${u})`;
+  el.appendChild(ph);
+  el.appendChild(label);
+  grid.insertBefore(el, grid.firstChild);
+  localTile = el;
+  return localTile;
+}
+
 function attachLocalVideo(track) {
-  if (!localTile) {
-    const el = document.createElement('div');
-    el.className = 'tile';
-    const label = document.createElement('div');
-    label.className = 'label';
-    const myName = (room && room.localParticipant && room.localParticipant.name) || 'Вы';
-    label.textContent = `${myName} (вы)`;
-    el.appendChild(label);
-    grid.insertBefore(el, grid.firstChild);
-    localTile = el;
-  }
+  const el = ensureLocalTile();
+  const ph = el.querySelector('.ph');
+  if (ph) ph.style.display = 'none'; // есть видео — аватарку прячем
   const v = track.attach();
   v.autoplay = true;
   v.playsInline = true;
@@ -327,6 +346,8 @@ async function loadBuffer(url) {
 
 // проигрывает url: публикует в палату (слышат все) + локально + в запись 15с.
 // Жёсткий кэп 15с — как и всё проигрываемое в tgbridge.
+// Локальный монитор идёт через gain: индивидуальный ползунок громкости
+// меняет громкость ТОЛЬКО у себя (в палату и в запись — как было).
 async function playUrlToRoom(url, btnEl) {
   if (!room || sfxBusy) return;
   sfxBusy = true;
@@ -340,7 +361,10 @@ async function playUrlToRoom(url, btnEl) {
     src.buffer = buffer;
     const dest = sfxCtx.createMediaStreamDestination();
     src.connect(dest);               // в палату
-    src.connect(sfxCtx.destination); // себе в колонки
+    const monitor = sfxCtx.createGain();
+    monitor.gain.value = sbVolume(); // индивидуальная громкость
+    src.connect(monitor);
+    monitor.connect(sfxCtx.destination); // себе в колонки
 
     const mst = dest.stream.getAudioTracks()[0];
     addToRecordMix(mst);             // попадает в запись 15с
@@ -365,6 +389,21 @@ async function playUrlToRoom(url, btnEl) {
   }
 }
 
+// --- индивидуальная громкость звуковой аптечки (только у себя) ---
+function sbVolume() {
+  const v = Number(localStorage.getItem('sbVolume'));
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
+}
+
+(function initSbVol() {
+  const slider = $('sbVol');
+  if (!slider) return;
+  slider.value = String(Math.round(sbVolume() * 100));
+  slider.addEventListener('input', () => {
+    localStorage.setItem('sbVolume', String(slider.value / 100));
+  });
+})();
+
 // --- панель soundboard: список кнопок с сервера + загрузка ---
 async function refreshSoundboard() {
   const box = $('sbBtns');
@@ -381,12 +420,29 @@ async function refreshSoundboard() {
       return;
     }
     for (const s of sounds) {
+      const row = document.createElement('span');
+      row.className = 'sfxrow';
       const b = document.createElement('button');
       b.className = 'sfx';
       b.textContent = s.label;
       b.title = s.label;
       b.onclick = () => playUrlToRoom(s.url, b);
-      box.appendChild(b);
+      const del = document.createElement('button');
+      del.className = 'sfxdel';
+      del.textContent = '✕';
+      del.title = 'Убрать звук из аптечки';
+      del.onclick = async () => {
+        if (!confirm('Убрать звук из аптечки?')) return;
+        try {
+          const res = await fetch(s.url, { method: 'DELETE' });
+          if (!res.ok) throw new Error((await res.text()) || res.status);
+          await refreshSoundboard();
+        } catch (e) {
+          $('sbErr').textContent = 'Не удалось удалить: ' + (e.message || e);
+        }
+      };
+      row.append(b, del);
+      box.appendChild(row);
     }
   } catch (_) { /* soundboard опционален */ }
 }
@@ -478,6 +534,103 @@ async function refreshRooms() {
 refreshRooms();
 setInterval(refreshRooms, 30000);
 
+// --- пул аватарок: случайная картинка каждому участнику ---
+// Аватарка = детерминированный хеш sid по СТАБИЛЬНОМУ списку с сервера
+// (list отсортирован по id). Все зрители вычисляют одинаковую картинку —
+// никакой синхронизации не нужно. Список пуст → дефолтный /avatar.jpg.
+let avatarUrls = [];
+
+async function deleteAvatar(id) {
+  const res = await fetch('/api/avatars/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (!res.ok) throw new Error((await res.text()) || res.status);
+}
+
+async function refreshAvatars() {
+  try {
+    const res = await fetch('/api/avatars');
+    const avatars = (await res.json()) || [];
+    avatarUrls = avatars.map((a) => a.url);
+    // перекрасить уже существующие тайлы (вдруг пул обновился)
+    document.querySelectorAll('.tile .ph').forEach(applyAvatarToPh);
+    const cnt = $('avatarCount');
+    if (cnt) cnt.textContent = avatarUrls.length;
+    // превью галереи на главной; удалить может любой — "лишнее" решает толпа
+    const box = $('avatarThumbs');
+    if (box) {
+      box.innerHTML = '';
+      for (const a of avatars) {
+        const th = document.createElement('div');
+        th.className = 'thumb';
+        const img = document.createElement('img');
+        img.src = a.url;
+        img.alt = a.id;
+        img.loading = 'lazy';
+        th.appendChild(img);
+        const del = document.createElement('button');
+        del.textContent = '✕';
+        del.title = 'Убрать портрет из галереи';
+        del.onclick = async () => {
+          if (!confirm('Убрать портрет из галереи?')) return;
+          try {
+            await deleteAvatar(a.id);
+            await refreshAvatars(); // обновить счётчик/превью и перекрасить тайлы
+          } catch (e) {
+            const avErr = $('avatarErr');
+            if (avErr) avErr.textContent = 'Не удалось удалить: ' + (e.message || e);
+          }
+        };
+        th.appendChild(del);
+        box.appendChild(th);
+      }
+    }
+  } catch (_) { /* аватарки опциональны, дефолт остаётся */ }
+}
+
+// djb2 — короткий стабильный хеш строки
+function strHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function avatarUrlFor(sid) {
+  if (!avatarUrls.length) return null;
+  return avatarUrls[strHash(sid) % avatarUrls.length];
+}
+
+function applyAvatarToPh(ph) {
+  const tile = ph.closest('.tile');
+  const sid = tile && tile.dataset.sid;
+  if (!sid) return;
+  const u = avatarUrlFor(sid);
+  if (u) ph.style.backgroundImage = `url(${u})`;
+}
+
+// загрузка портрета (как звуки: скрытый input за кнопкой)
+$('avatarUploadBtn').onclick = () => $('avatarFile').click();
+$('avatarFile').onchange = async () => {
+  const f = $('avatarFile').files[0];
+  $('avatarFile').value = '';
+  const avErr = $('avatarErr');
+  if (avErr) avErr.textContent = '';
+  if (!f) return;
+  try {
+    if (f.size > 4 * 1024 * 1024) throw new Error('больше 4 МБ — не влезет');
+    if (!/\.(jpe?g|png|gif|webp)$/i.test(f.name)) {
+      throw new Error('разрешены jpg/png/gif/webp');
+    }
+    const fd = new FormData();
+    fd.append('file', f);
+    const res = await fetch('/api/avatars', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.text()) || res.status);
+    await refreshAvatars();
+  } catch (e) {
+    if (avErr) avErr.textContent = 'Загрузка не удалась: ' + (e.message || e);
+  }
+};
+
+refreshAvatars();
+
 // --- Запись последних 15 секунд микса комнаты ---
 // PCM-кольцевой буфер (ScriptProcessor). Даёт РОВНО последние 15с и валидный файл
 // (webm нельзя обрезать по времени на клиенте — заголовок только в первом чанке).
@@ -512,6 +665,7 @@ function initRecordMix() {
   mute.connect(recCtx.destination);
 
   recProc.onaudioprocess = (e) => {
+    if (!recRing) return; // race: cleanup зануляет буфер до последнего тика
     const inBuf = e.inputBuffer.getChannelData(0);
     for (let i = 0; i < inBuf.length; i++) {
       recRing[recWritePos] = inBuf[i];
@@ -582,6 +736,9 @@ $('recBtn').onclick = () => {
 $('leaveBtn').onclick = () => { if (room) room.disconnect(); };
 
 function cleanup() {
+  // сначала глушим колбэк записи: ScriptProcessor может тикнуть между
+  // disconnect и обнулением буферов → "Cannot set properties of null"
+  try { if (recProc) recProc.onaudioprocess = null; } catch (_) {}
   try { if (recProc) recProc.disconnect(); } catch (_) {}
   try { if (recCtx) recCtx.close(); } catch (_) {}
   recCtx = null; recProc = null; recMixGain = null; recRing = null;
