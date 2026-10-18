@@ -9,6 +9,13 @@
 // Триггеры:
 //   - voice / audio / video / video_note  -> транскод ffmpeg -> публикация
 //   - текст с упоминанием бота (@bot) ИЛИ с "#<палата>"  -> TTS (piper) -> публикация
+//
+// ГРУППЫ: по умолчанию у бота включён privacy mode (@BotFather) — рядовой
+// участник-бот получает только команды, упоминания и реплаи. Голосовые/видео
+// без упоминания до него НЕ доставляются вовсе (код их не увидит). Решение:
+// сделать бота админом группы ИЛИ выключить privacy mode у @BotFather.
+// При добавлении в группу бот сам пишет эту подсказку (см. chatMember).
+
 package main
 
 import (
@@ -26,6 +33,10 @@ import (
 
 	"github.com/mymmrac/telego"
 )
+
+// groupAnonymousBotID — служебный "пользователь", от которого приходят
+// сообщения анонимных админов группы (скрытых за маской группы).
+const groupAnonymousBotID = 1087968824
 
 type config struct {
 	botToken   string
@@ -105,6 +116,7 @@ type app struct {
 	cfg   config
 	bot   *telego.Bot
 	me    string // username бота в нижнем регистре, без @
+	meID  int64  // ID бота (фильтр my_chat_member)
 	pub   *Publisher
 	tts   *TTS
 	store *palataStore
@@ -127,20 +139,58 @@ func main() {
 		cfg:   cfg,
 		bot:   bot,
 		me:    strings.ToLower(me.Username),
+		meID:  me.ID,
 		pub:   NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
 		tts:   NewTTS(cfg.piperBin, cfg.piperModel),
 		store: newPalataStore(),
 	}
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
 
-	updates, err := bot.UpdatesViaLongPolling(ctx, nil)
+	// allowed_updates Telegram запоминает между вызовами getUpdates (sticky):
+	// явный список страхует от "залипшей" настройки с прошлого запуска/вебхука.
+	updates, err := bot.UpdatesViaLongPolling(ctx, &telego.GetUpdatesParams{
+		AllowedUpdates: []string{"message", "channel_post", "my_chat_member"},
+	})
 	if err != nil {
 		log.Fatalf("long polling: %v", err)
 	}
 	for u := range updates {
-		if u.Message != nil {
+		switch {
+		case u.Message != nil:
 			go a.handle(ctx, u.Message)
+		case u.ChannelPost != nil: // посты в каналах — те же медиа-триггеры
+			go a.handle(ctx, u.ChannelPost)
+		case u.MyChatMember != nil: // добавление/повышение бота в группе
+			go a.chatMember(ctx, u.MyChatMember)
 		}
+	}
+}
+
+// chatMember реагирует на добавление бота в группу/канал и на выдачу прав.
+// Именно тут ловим главный источник "в группе медиа не работает".
+func (a *app) chatMember(ctx context.Context, cm *telego.ChatMemberUpdated) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("chatMember panic: %v", r)
+		}
+	}()
+	if cm.NewChatMember.MemberUser().ID != a.meID {
+		return // изменение касается не нашего бота (иных и не присылают, но всё же)
+	}
+	if cm.Chat.Type != telego.ChatTypeGroup && cm.Chat.Type != telego.ChatTypeSupergroup {
+		return
+	}
+	switch cm.NewChatMember.MemberStatus() {
+	case telego.MemberStatusMember:
+		// добавили рядовым участником: privacy mode режет все медиа без упоминания
+		a.reply(ctx, cm.Chat.ID,
+			"Я в группе, но рядовой бот видит только команды, упоминания и реплаи — "+
+				"голосовые/видео до меня не дойдут. Сделайте меня админом группы ИЛИ выключите "+
+				"privacy mode: @BotFather → /setprivacy → выбрать бота → Disable.")
+	case telego.MemberStatusAdministrator, telego.MemberStatusCreator:
+		a.reply(ctx, cm.Chat.ID,
+			"✓ теперь я вижу все сообщения группы, включая медиа. Кидайте голосовые/видео/аудио — "+
+				"проиграю в палате (палата: /palata 6 или #6 в подписи).")
 	}
 }
 
@@ -160,6 +210,11 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 	uid := int64(0)
 	if m.From != nil {
 		uid = m.From.ID
+	}
+	// anti-loop в группах: чужие боты не триггерят медиа/TTS. Исключение —
+	// GroupAnonymousBot: через него пишут анонимные админы группы.
+	if m.From != nil && m.From.IsBot && m.From.ID != groupAnonymousBotID {
+		return
 	}
 	caption := m.Caption
 	text := m.Text
