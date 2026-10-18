@@ -44,9 +44,15 @@ function ensureTile(participant) {
   el.appendChild(ph);
   el.appendChild(label);
   grid.appendChild(el);
-  t = { el, videoEl: null, ph };
+  t = { el, videoEl: null, ph, label };
   tiles.set(participant.sid, t);
   return t;
+}
+
+// обновить ник на тайле (name пришёл/изменился после создания тайла)
+function updateTileLabel(participant) {
+  const t = tiles.get(participant.sid);
+  if (t) t.label.textContent = participant.name || participant.identity;
 }
 
 function removeTile(participant) {
@@ -149,6 +155,7 @@ function wireRoomEvents(r) {
   });
   r.on(RoomEvent.ParticipantConnected, (p) => ensureTile(p));
   r.on(RoomEvent.ParticipantDisconnected, (p) => removeTile(p));
+  r.on(RoomEvent.ParticipantNameChanged, (_name, p) => updateTileLabel(p));
   r.on(RoomEvent.LocalTrackPublished, (pub) => {
     if (pub.track && pub.track.kind === Track.Kind.Video) {
       attachLocalVideo(pub.track);
@@ -167,7 +174,8 @@ function attachLocalVideo(track) {
     el.className = 'tile';
     const label = document.createElement('div');
     label.className = 'label';
-    label.textContent = 'Вы';
+    const myName = (room && room.localParticipant && room.localParticipant.name) || 'Вы';
+    label.textContent = `${myName} (вы)`;
     el.appendChild(label);
     grid.insertBefore(el, grid.firstChild);
     localTile = el;

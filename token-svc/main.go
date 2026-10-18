@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
 )
 
 type config struct {
@@ -153,6 +154,15 @@ func (c config) handleToken(w http.ResponseWriter, r *http.Request) {
 			CanPublishData:       boolPtr(true),
 			CanUpdateOwnMetadata: &canUpdateOwn,
 		})
+
+	// enforce лимит участников: токен несёт RoomConfiguration, который livekit
+	// применяет при auto-create комнаты. Без этого roomMax был мёртвой настройкой.
+	if c.roomMax > 0 {
+		at.SetRoomConfig(&livekit.RoomConfiguration{
+			Name:            req.Room,
+			MaxParticipants: c.roomMax,
+		})
+	}
 
 	jwt, err := at.ToJWT()
 	if err != nil {
