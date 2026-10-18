@@ -193,12 +193,27 @@ func main() {
 	mux.HandleFunc("/api/token", cfg.handleToken)
 	mux.HandleFunc("/healthz", cfg.handleHealth)
 
-	// глобальный soundboard: загрузка/листинг/отдача звуков
-	sb, err := newSoundboard(getEnv("SOUNDS_DIR", "/data/sounds"))
-	if err != nil {
-		log.Fatalf("soundboard init: %v", err)
+	// список открытых палат (LiveKit RoomService) — для главной страницы.
+	// Если SFU недоступен, /api/token всё равно должен работать: ошибки видны
+	// только в /api/rooms (502), сервис не падает.
+	rooms := newRoomLister(getEnv("LIVEKIT_URL", "ws://127.0.0.1:7880"), cfg.apiKey, cfg.apiSecret)
+	mux.HandleFunc("/api/rooms", rooms.handleRooms)
+
+	// глобальный soundboard: загрузка/листинг/отдача звуков.
+	// Опциональная фича: если каталог не создаётся (нет прав) — НЕ роняем
+	// сервис целиком, отдаём 503 только на /api/sounds*.
+	sb, sbErr := newSoundboard(getEnv("SOUNDS_DIR", "/data/sounds"))
+	if sbErr != nil {
+		log.Printf("WARNING: soundboard disabled: %v (token issuing still works)", sbErr)
+		mux.HandleFunc("/api/sounds", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "soundboard disabled", http.StatusServiceUnavailable)
+		})
+		mux.HandleFunc("/api/sounds/", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "soundboard disabled", http.StatusServiceUnavailable)
+		})
+	} else {
+		sb.routes(mux)
 	}
-	sb.routes(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.listen,
@@ -209,6 +224,10 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=%s)", cfg.listen, cfg.ttl, cfg.roomMax, sb.dir)
+	if sbErr != nil {
+		log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=OFF)", cfg.listen, cfg.ttl, cfg.roomMax)
+	} else {
+		log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=%s)", cfg.listen, cfg.ttl, cfg.roomMax, sb.dir)
+	}
 	log.Fatal(srv.ListenAndServe())
 }

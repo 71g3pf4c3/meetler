@@ -326,6 +326,7 @@ async function loadBuffer(url) {
 }
 
 // проигрывает url: публикует в палату (слышат все) + локально + в запись 15с.
+// Жёсткий кэп 15с — как и всё проигрываемое в tgbridge.
 async function playUrlToRoom(url, btnEl) {
   if (!room || sfxBusy) return;
   sfxBusy = true;
@@ -348,7 +349,12 @@ async function playUrlToRoom(url, btnEl) {
       name: 'sfx', source: Track.Source.Unknown,
     });
 
-    await new Promise((resolve) => { src.onended = resolve; src.start(); });
+    await new Promise((resolve) => {
+      // кэп длительности: дольше 15с в эфир не льём
+      const cap = setTimeout(() => { try { src.stop(); } catch (_) {} }, 15000);
+      src.onended = () => { clearTimeout(cap); resolve(); };
+      src.start();
+    });
     await new Promise((r) => setTimeout(r, 300)); // хвост для подписчиков
   } catch (e) {
     $('err').textContent = 'Звук не удался: ' + (e.message || e);
@@ -358,9 +364,6 @@ async function playUrlToRoom(url, btnEl) {
     sfxBusy = false;
   }
 }
-
-// ГОЙДА = просто первая кнопка soundboard на встроенный goida.mp3
-$('goidaBtn').onclick = () => playUrlToRoom('/goida.mp3', $('goidaBtn'));
 
 // --- панель soundboard: список кнопок с сервера + загрузка ---
 async function refreshSoundboard() {
@@ -409,12 +412,71 @@ $('sbFile').onchange = async () => {
     if (!/\.(mp3|ogg|oga|wav|m4a|webm|opus)$/i.test(f.name)) {
       throw new Error('разрешены mp3/ogg/wav/m4a/webm/opus');
     }
+    // лимит длительности ≤10с: декодируем на клиенте ДО отправки
+    // (server-side проверки длительности нет — ffmpeg в token-svc не живёт;
+    // кэп на проигрывание 15с в playUrlToRoom остаётся страховкой)
+    sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const probe = await sfxCtx.decodeAudioData(await f.arrayBuffer());
+    if (probe.duration > 10) {
+      throw new Error(`длиннее 10 секунд (${probe.duration.toFixed(0)}с) — обрежь`);
+    }
     await uploadSound(f);
     await refreshSoundboard();
   } catch (e) {
     if (sbErr) sbErr.textContent = 'Загрузка не удалась: ' + (e.message || e);
   }
 };
+
+// --- список открытых палат на главной (GET /api/rooms, LiveKit ListRooms) ---
+function fmtAge(unixSec) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - unixSec));
+  if (s < 60) return 'только что';
+  if (s < 3600) return Math.floor(s / 60) + ' мин';
+  if (s < 86400) return Math.floor(s / 3600) + ' ч';
+  return Math.floor(s / 86400) + ' дн';
+}
+
+async function refreshRooms() {
+  const body = $('roomsBody');
+  if (!body) return;
+  if ($('join').style.display === 'none') return; // в палате — не тратим запросы
+  try {
+    const res = await fetch('/api/rooms');
+    const rooms = (await res.json()) || [];
+    body.innerHTML = '';
+    if (!rooms.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 3;
+      td.className = 'muted';
+      td.textContent = 'тихо — открытых палат нет';
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
+    for (const r of rooms) {
+      const tr = document.createElement('tr');
+      // имя палаты строим через DOM (не innerHTML): имя комнаты приходит
+      // с сервера и в общем случае не санитизировано
+      const tdName = document.createElement('td');
+      const a = document.createElement('a');
+      a.href = '/' + encodeURIComponent(r.name);
+      a.textContent = r.name;
+      tdName.appendChild(a);
+      const tdCnt = document.createElement('td');
+      tdCnt.textContent = String(r.participants);
+      const tdAge = document.createElement('td');
+      tdAge.textContent = fmtAge(r.createdAt);
+      tr.append(tdName, tdCnt, tdAge);
+      body.appendChild(tr);
+    }
+  } catch (_) {
+    // не показываем ошибку: список палат — не критичная фича
+  }
+}
+
+refreshRooms();
+setInterval(refreshRooms, 30000);
 
 // --- Запись последних 15 секунд микса комнаты ---
 // PCM-кольцевой буфер (ScriptProcessor). Даёт РОВНО последние 15с и валидный файл
@@ -530,6 +592,7 @@ function cleanup() {
   $('stage').style.display = 'none';
   $('join').style.display = 'block';
   $('joinBtn').disabled = false;
+  refreshRooms(); // вернулись на главную — обновить список палат
   stopStats();
 }
 

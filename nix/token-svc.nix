@@ -11,7 +11,7 @@ buildGoModule {
   };
 
   # пересчитай при изменении go.sum: nix build .#token-svc выдаст ожидаемый хеш
-  vendorHash = "sha256-6dEag5IvA2e/7aHktkEcSiJlZ+MaoCbtK1aasnXaSnQ=";
+  vendorHash = "sha256-2LaN7+rCpigA8nS4Z6zcDiNgqOT3zhMkxAfOmbZiBpk=";
 
   ldflags = [ "-s" "-w" ];
 
