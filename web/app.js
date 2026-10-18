@@ -7,7 +7,7 @@ import {
   VideoPresets,
   LocalAudioTrack,
   createLocalScreenTracks,
-} from 'https://cdn.jsdelivr.net/npm/livekit-client@2.23.0/dist/livekit-client.esm.mjs';
+} from './vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
 
 const $ = (id) => document.getElementById(id);
 const grid = $('grid');
@@ -79,6 +79,14 @@ function attachTrack(participant, track) {
     el.autoplay = true;
     el.style.display = 'none';
     document.body.appendChild(el);
+    // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
+    // Главный рычаг latency на стороне получателя (экономит 50-150ms).
+    try {
+      const receiver = track.receiver;
+      if (receiver && 'jitterBufferTarget' in receiver) {
+        receiver.jitterBufferTarget = 0;
+      }
+    } catch (_) {}
     // подмешать в микс для записи (весь звук комнаты)
     addToRecordMix(track.mediaStreamTrack);
   }
@@ -125,10 +133,11 @@ async function join() {
         // видео на минимум — лишь бы пролезло в любой канал. Качество не важно.
         videoEncoding: { maxBitrate: 150000, maxFramerate: 15 },
         videoCodec: 'vp8',
-        // Аудио: минимальная задержка. Низкий битрейт (качество побоку).
+        // Аудио: минимальная задержка. ptime=10ms (вместо 20) → меньше пакетизационной
+        // задержки на кодере. Низкий битрейт (качество побоку).
         dtx: false,
         red: false,
-        audioPreset: { maxBitrate: 24000 },
+        audioPreset: { maxBitrate: 24000, ptime: 10 },
       },
     });
 

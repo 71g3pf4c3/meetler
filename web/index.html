@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>meetler :: палата №6</title>
   <link rel="icon" type="image/png" href="./logo.png" />
+  <!-- preload: тянем тяжёлый livekit-client параллельно с парсингом HTML -->
+  <link rel="modulepreload" href="./vendor/livekit-client.esm.mjs" />
+  <link rel="preload" as="script" href="./app.js" crossorigin />
   <style>
     /* UI в стиле старых форумов (rutracker / 4chan): таблицы, Verdana, бежевый фон. */
     * { box-sizing: border-box; }
