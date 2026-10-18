@@ -1,0 +1,10 @@
+# Dev-override: Caddy в HTTP на :8088 (без TLS/ACME).
+# Запуск: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+# URL: http://localhost:8088
+services:
+  caddy:
+    ports: !override
+      - "8088:8088"
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./web:/srv/web:ro

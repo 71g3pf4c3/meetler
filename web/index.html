@@ -27,6 +27,16 @@
     button:disabled { opacity: .5; cursor: default; }
     button.secondary { background: #2a2f37; }
     button.danger { background: #dc2626; }
+    button.goida {
+      background: linear-gradient(135deg, #f59e0b, #dc2626);
+      font-weight: 800; letter-spacing: 1px;
+    }
+    button.goida:active { transform: scale(.96); }
+    button.goida.playing { animation: goidaPulse .5s ease-in-out infinite alternate; }
+    @keyframes goidaPulse {
+      from { box-shadow: 0 0 0 0 rgba(245,158,11,.6); }
+      to   { box-shadow: 0 0 18px 4px rgba(220,38,38,.8); }
+    }
     #stage { flex: 1; display: none; flex-direction: column; min-height: 0; }
     #grid {
       flex: 1; display: grid; gap: 8px; padding: 8px; min-height: 0;
@@ -36,6 +46,13 @@
     .tile {
       position: relative; background: #000; border-radius: 10px; overflow: hidden;
       aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center;
+      outline: 3px solid transparent; outline-offset: -3px;
+      transition: outline-color .12s ease, box-shadow .12s ease;
+    }
+    /* говорящий участник — зелёная рамка + свечение */
+    .tile.speaking {
+      outline-color: #22c55e;
+      box-shadow: 0 0 0 1px #22c55e, 0 0 16px 2px rgba(34,197,94,.55);
     }
     .tile video { width: 100%; height: 100%; object-fit: cover; }
     .tile .label {
@@ -66,6 +83,8 @@
       <button id="micBtn" class="secondary">Mic: on</button>
       <button id="camBtn" class="secondary">Cam: on</button>
       <button id="shareBtn" class="secondary">Демонстрация</button>
+      <button id="goidaBtn" class="goida">ГОЙДА</button>
+      <button id="recBtn" class="secondary">Скачать 15с (wav)</button>
       <button id="leaveBtn" class="danger">Выйти</button>
       <span id="stats"></span>
     </div>

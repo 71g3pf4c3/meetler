@@ -68,8 +68,7 @@ room:
   departure_timeout: 20
   max_participants: 0          # лимит навязывает token-svc per-room, тут 0 = без глоб. лимита
   enabled_codecs:
-    - mime: audio/opus
-    - mime: audio/red          # RED (аудио FEC) — скрывает потери голоса
+    - mime: audio/opus         # только opus mono — простой/надёжный аудио-путь
     - mime: video/vp8
     - mime: video/vp9
     - mime: video/h264
@@ -81,7 +80,7 @@ room:
     max: 1000
 
 audio:
-  active_red_encoding: true    # RED на аплинке опуса — устойчивость голоса к потерям
+  active_red_encoding: false   # RED выкл — приоритет простоты/latency, не качества
 
 # Prometheus метрики на :6789/metrics (скрейпь своим VictoriaMetrics/Prometheus).
 prometheus:

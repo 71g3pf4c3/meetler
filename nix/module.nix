@@ -21,8 +21,9 @@ let
   proxyGroup = if cfg.reverseProxy == "nginx" then "nginx" else "caddy";
 
   # Централизуем серт на security.acme → стабильный путь для TURN независимо от proxy.
-  # webserver использует useACMEHost (не управляет ACME сам).
+  # webserver использует useACMEHost (не управляет ACME сам), challenge — через webroot.
   acmeDir = "/var/lib/acme/${cfg.domain}";
+  acmeChallengeRoot = "/var/lib/acme/acme-challenge";
 in
 {
   options.services.hit-meet = {
@@ -153,8 +154,7 @@ in
           departure_timeout = 20;
           max_participants = 0;
           enabled_codecs = [
-            { mime = "audio/opus"; }
-            { mime = "audio/red"; }
+            { mime = "audio/opus"; }   # только opus mono — простой/надёжный путь
             { mime = "video/vp8"; }
             { mime = "video/vp9"; }
             { mime = "video/h264"; }
@@ -166,7 +166,7 @@ in
           };
         };
 
-        audio.active_red_encoding = true;
+        audio.active_red_encoding = false;  # RED выкл — приоритет простоты/latency
         prometheus.port = 6789;
         logging = { level = "info"; json = true; };
       } // lib.optionalAttrs cfg.enableTurn {
@@ -182,12 +182,14 @@ in
       };
     };
 
-    # ACME-серт централизован: один cert-order, webserver и livekit читают один путь.
-    # HTTP-01 challenge отдаёт webserver через webroot; серт в /var/lib/acme/<domain>.
+    # ACME HTTP-01 через общий webroot. Один cert-order, серт в /var/lib/acme/<domain>,
+    # читается и webserver'ом (useACMEHost), и livekit TURN (через SupplementaryGroups).
+    # Challenge-файлы кладутся в webroot; оба webserver'а обслуживают
+    # /.well-known/acme-challenge/ из него (см. ниже). Это чинит "websocket error":
+    # без выписанного серта HTTPS невалиден и браузер рвёт wss.
     security.acme.certs.${cfg.domain} = {
-      inherit (cfg) domain;
-      group = proxyGroup;                 # группа-владелец серта = группа веб-сервера
-      webroot = "/var/lib/acme/acme-challenge";
+      group = proxyGroup;
+      webroot = acmeChallengeRoot;
     };
     # services.livekit использует DynamicUser → нет статического users.users.livekit.
     # Даём динамическому юзеру доступ к ACME-серту (для TURN/TLS) через
@@ -223,9 +225,19 @@ in
     };
 
     # --- reverse-proxy: Caddy ---
-    # useACMEHost: Caddy не управляет ACME сам, берёт серт из security.acme.
+    # Серт из security.acme (useACMEHost), challenge раздаётся на :80 из webroot.
     services.caddy = lib.mkIf (cfg.reverseProxy == "caddy") {
       enable = true;
+      # HTTP :80 — ACME HTTP-01 challenge (серт выписывается здесь), остальное → https.
+      virtualHosts."http://${cfg.domain}".extraConfig = ''
+        handle /.well-known/acme-challenge/* {
+          root * ${acmeChallengeRoot}
+          file_server
+        }
+        handle {
+          redir https://{host}{uri} permanent
+        }
+      '';
       virtualHosts.${cfg.domain} = {
         useACMEHost = cfg.domain;
         extraConfig = ''
@@ -264,12 +276,16 @@ in
         root = "${web}";
 
         locations = {
+          # ACME HTTP-01 challenge из общего webroot (серт выписывается здесь).
+          "/.well-known/acme-challenge/" = {
+            root = acmeChallengeRoot;
+          };
           # token API
           "/api/" = {
             proxyPass = "http://127.0.0.1:8080";
           };
-          # LiveKit signaling (wss) — КРИТИЧНО: WebSocket upgrade + долгие сессии.
-          # Без proxyWebsockets сигналинг не установится.
+          # LiveKit signaling (wss). Клиент ходит на /rtc И /rtc/v1 — prefix /rtc
+          # покрывает оба. proxyWebsockets обязателен для upgrade.
           "/rtc" = {
             proxyPass = "http://127.0.0.1:7880";
             proxyWebsockets = true;

@@ -1,0 +1,24 @@
+# Dev-only: HTTP на :8088 без TLS. localhost — secure context, getUserMedia работает.
+# НЕ для прода (нет TLS, недоступно другим устройствам в сети).
+{
+	auto_https off
+}
+
+:8088 {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy token-svc:8080
+	}
+	handle /rtc* {
+		reverse_proxy host.docker.internal:7880
+	}
+	handle /twirp* {
+		reverse_proxy host.docker.internal:7880
+	}
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}
