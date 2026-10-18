@@ -12,11 +12,13 @@
 services:
   redis:
     image: redis:7-alpine
-    command: redis-server --save "" --appendonly no
+    # host-network + bind только на loopback: livekit (тоже host-net) видит redis
+    # по 127.0.0.1:6379. Наружу порт не светится. Bridge-сервисам redis не нужен.
+    network_mode: host
+    command: redis-server --bind 127.0.0.1 --port 6379 --save "" --appendonly no
     restart: unless-stopped
-    networks: [internal]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-h", "127.0.0.1", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5

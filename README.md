@@ -146,6 +146,9 @@ Caddy проксирует WS прозрачно. ACME централизова�
 
 Dev-shell: `nix develop` (go, gopls, livekit, livekit-cli, caddy, nginx).
 
+Примечание: nixpkgs тянет livekit из своего пина (может быть чуть старее docker-пина
+v1.13.10 — tuned-поля конфига идентичны, API совместим).
+
 ## Лимиты
 
 - Один инстанс LiveKit. Для кластера (много нод, общий redis) — см. LiveKit distributed
