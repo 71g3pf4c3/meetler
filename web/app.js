@@ -273,7 +273,7 @@ async function join() {
     }
 
     $('join').style.display = 'none';
-    $('stage').style.display = 'block';
+    $('stage').style.display = 'flex';
     ensureLocalTile(); // свой тайл с аватаркой, даже если камеры нет
     const crumb = $('roomCrumb');
     if (crumb) crumb.textContent = roomName;
@@ -282,6 +282,9 @@ async function join() {
     // пока в палате — подхватывать портреты, которые принесли другие
     if (avatarsTimer) clearInterval(avatarsTimer);
     avatarsTimer = setInterval(refreshAvatars, 30000);
+    refreshWardNav();
+    if (wnavTimer) clearInterval(wnavTimer);
+    wnavTimer = setInterval(refreshWardNav, 30000);
     startStats();
   } catch (e) {
     $('err').textContent = 'Ошибка входа: ' + (e.message || e);
@@ -330,6 +333,9 @@ function wireRoomEvents(r) {
     if (pub.kind === Track.Kind.Video) setLocalVideoVisible(true);
   });
   r.on(RoomEvent.Disconnected, (reason) => {
+    // смена палаты (switchRoom): как только комната сменилась, поздние
+    // события СТАРОЙ комнаты не должны трогать UI новой
+    if (room && room !== r) return;
     // личный кик (RemoveParticipant) → страница "тюрьма" с плохой концовкой
     if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
       location.href = '/jail.html';
@@ -339,6 +345,7 @@ function wireRoomEvents(r) {
     // показываем только когда человек не сам нажал "Выписаться"
     const unexpected = !selfLeaving && reason !== DisconnectReason.CLIENT_INITIATED;
     selfLeaving = false;
+    if (room === r) room = null; // currentRoom() дальше читает поле формы
     cleanup();
     if (unexpected) {
       $('err').textContent = reason === DisconnectReason.ROOM_DELETED
@@ -430,6 +437,11 @@ function setTileVideo(participant, show) {
 $('joinBtn').onclick = join;
 $('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
 $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+// ник сохраняется на каждый ввод: не вводим заново при следующем визите
+$('name').addEventListener('input', () => {
+  const v = $('name').value.trim();
+  if (v) localStorage.setItem('meetlerName', v);
+});
 
 // URL-резолв палаты (как jitsi): /<palata> → при входе спрашиваем только ник.
 (function initFromUrl() {
@@ -697,6 +709,63 @@ async function refreshRooms() {
 refreshRooms();
 setInterval(refreshRooms, 30000);
 
+// --- вертикальное меню палат в конференции (слева) ---
+// Быстрая смена палаты в 1 клик — как комнаты в чате. Ник уже сохранён,
+// повторно вводить ничего не нужно.
+let wnavTimer = null;
+
+async function refreshWardNav() {
+  const box = $('wardNavList');
+  if (!box || !room) return;
+  try {
+    const res = await fetch('/api/rooms');
+    const rooms = (await res.json()) || [];
+    box.innerHTML = '';
+    if (!rooms.length) {
+      const d = document.createElement('div');
+      d.className = 'wnav-empty';
+      d.textContent = 'других палат нет';
+      box.appendChild(d);
+      return;
+    }
+    for (const r of rooms) {
+      const it = document.createElement('div');
+      it.className = 'wnav-item' + (r.name === room.name ? ' current' : '');
+      // имя с сервера — строим через DOM, не innerHTML
+      const nm = document.createElement('span');
+      nm.textContent = r.name;
+      const cnt = document.createElement('span');
+      cnt.className = 'cnt';
+      cnt.textContent = r.participants ? String(r.participants) : '';
+      it.append(nm, cnt);
+      if (r.name !== room.name) {
+        it.title = 'Перейти в палату ' + r.name;
+        it.onclick = () => switchRoom(r.name);
+      } else {
+        it.title = 'Вы здесь';
+      }
+      box.appendChild(it);
+    }
+  } catch (_) { /* меню палат опционально */ }
+}
+
+// Смена палаты без перезагрузки страницы: выходим из текущей (cleanup идёт
+// синхронно по Disconnected), чиним URL/заголовок и входим в новую через
+// join() — ник тянется из localStorage/поля, ничего вводить заново не надо.
+async function switchRoom(newRoom) {
+  if (!room || newRoom === room.name) return;
+  selfLeaving = true; // свой уход — без "вас выписали"
+  const old = room;
+  room = null; // хендлер старой комнаты увидит room==null и отработает cleanup
+  try { old.disconnect(); } catch (_) {}
+  selfLeaving = false;
+  cleanup(); // страховка: если Disconnected уже отработал — идемпотентно
+  history.replaceState(null, '', '/' + encodeURIComponent(newRoom));
+  document.title = `meetler :: палата ${newRoom}`;
+  $('room').value = newRoom; // join() читает поле, если URL-путь не сработал
+  await join();
+}
+
 // --- пул аватарок ПАЛАТЫ: случайная картинка каждому участнику ---
 // Аватарка = детерминированный хеш sid по СТАБИЛЬНОМУ списку с сервера
 // (list отсортирован по id). Все зрители вычисляют одинаковую картинку —
@@ -943,7 +1012,9 @@ function cleanup() {
   tiles.clear();
   if (localTile) { localTile.remove(); localTile = null; }
   if (avatarsTimer) { clearInterval(avatarsTimer); avatarsTimer = null; }
-  room = null; // currentRoom() дальше читает поле формы, а не мёртвую Room
+  if (wnavTimer) { clearInterval(wnavTimer); wnavTimer = null; }
+  // room обнуляет Disconnected-хендлер (инстанс-гард): cleanup не знает,
+  // какая комната владеет UI во время смены палаты
   $('stage').style.display = 'none';
   $('join').style.display = 'block';
   $('joinBtn').disabled = false;

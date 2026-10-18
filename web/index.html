@@ -129,8 +129,43 @@
     }
     #roomsErr { color: #a00; font-size: 11px; min-height: 0; margin-top: 4px; }
 
-    /* конференция */
-    #stage { display: none; }
+    /* конференция: слева вертикальное меню палат, справа сама палата.
+       display переключается из JS ('flex' когда в палате). */
+    #stage { display: none; gap: 8px; align-items: flex-start; }
+    #wardNav {
+      width: 148px; flex-shrink: 0; background: #fff;
+      border: 1px solid #a0a0a0;
+    }
+    #wardNav .wnav-head {
+      background: #800000; color: #fff; font-weight: bold;
+      padding: 3px 8px; font-size: 11px; border-bottom: 1px solid #600000;
+    }
+    #wardNavList { max-height: 60vh; overflow-y: auto; }
+    .wnav-item {
+      display: flex; justify-content: space-between; gap: 4px;
+      padding: 3px 8px; font-size: 11px; cursor: pointer;
+      border-bottom: 1px solid #eee; color: #0000cc;
+    }
+    .wnav-item:hover { background: #f0ead6; }
+    .wnav-item.current {
+      background: #d7c9a7; font-weight: bold; color: #800000;
+    }
+    .wnav-item .cnt { color: #777; font-weight: normal; }
+    .wnav-empty { padding: 4px 8px; font-size: 11px; color: #777; }
+    #wardNav .wnav-new {
+      display: block; padding: 4px 8px; font-size: 11px;
+      border-top: 1px solid #a0a0a0; background: #f7f3ea;
+      text-decoration: none; color: #0000cc;
+    }
+    #wardNav .wnav-new:hover { background: #f0ead6; }
+    #stageMain { flex: 1; min-width: 0; }
+    /* на узких экранах меню палат уходит наверх горизонтальной лентой */
+    @media (max-width: 700px) {
+      #stage { flex-direction: column; }
+      #wardNav { width: 100%; }
+      #wardNavList { display: flex; flex-wrap: wrap; max-height: none; }
+      .wnav-item { border-bottom: none; border-right: 1px solid #eee; }
+    }
     #bar {
       background: #d7c9a7; border: 1px solid #b3a079; padding: 5px 8px;
       margin-bottom: 8px; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
@@ -256,34 +291,42 @@
       <div id="roomsErr"></div>
     </div>
 
-    <!-- конференция -->
+    <!-- конференция: слева вертикальное меню палат (переключение в 1 клик),
+         справа — сама палата (бар, сетка тайлов, звуковая аптечка) -->
     <div id="stage">
-      <div class="navbar">Вы здесь: <b>Отделение</b> » Палата № <span id="roomCrumb">...</span></div>
-      <div id="bar">
-        <button id="micBtn">Mic: on</button>
-        <button id="camBtn">Cam: on</button>
-        <button id="shareBtn">Демонстрация</button>
-        <button id="recBtn">Скачать 15с (wav)</button>
-        <button id="leaveBtn" class="danger">Выписаться</button>
-        <span id="stats"></span>
-      </div>
-      <div id="grid"></div>
+      <aside id="wardNav">
+        <div class="wnav-head">Палаты</div>
+        <div id="wardNavList"><div class="wnav-empty">загружается…</div></div>
+        <a class="wnav-new" href="/" title="В приёмное отделение">＋ новая палата</a>
+      </aside>
+      <div id="stageMain">
+        <div class="navbar">Вы здесь: <b>Отделение</b> » Палата № <span id="roomCrumb">...</span></div>
+        <div id="bar">
+          <button id="micBtn">Mic: on</button>
+          <button id="camBtn">Cam: on</button>
+          <button id="shareBtn">Демонстрация</button>
+          <button id="recBtn">Скачать 15с (wav)</button>
+          <button id="leaveBtn" class="danger">Выписаться</button>
+          <span id="stats"></span>
+        </div>
+        <div id="grid"></div>
 
-      <!-- soundboard: ЗВУКИ ЭТОЙ ПАЛАТЫ, любой пациент может залить,
-           каждый становится кнопкой (слышит вся палата) -->
-      <table class="forum" id="soundboard">
-        <tr><th>Звуковая аптечка палаты — нажатие слышит вся палата</th></tr>
-        <tr>
-          <td>
-            <div id="sbBtns"></div>
-            <button id="sbUploadBtn">+ залить звук (mp3/ogg/wav/m4a/webm/opus, до 2 МБ)</button>
-            <span id="sbVolRow">громкость у себя: <input type="range" id="sbVol" min="0" max="100" value="100" /></span>
-            <input type="file" id="sbFile" hidden
-                   accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
-            <div id="sbErr"></div>
-          </td>
-        </tr>
-      </table>
+        <!-- soundboard: ЗВУКИ ЭТОЙ ПАЛАТЫ, любой пациент может залить,
+             каждый становится кнопкой (слышит вся палата) -->
+        <table class="forum" id="soundboard">
+          <tr><th>Звуковая аптечка палаты — нажатие слышит вся палата</th></tr>
+          <tr>
+            <td>
+              <div id="sbBtns"></div>
+              <button id="sbUploadBtn">+ залить звук (mp3/ogg/wav/m4a/webm/opus, до 2 МБ)</button>
+              <span id="sbVolRow">громкость у себя: <input type="range" id="sbVol" min="0" max="100" value="100" /></span>
+              <input type="file" id="sbFile" hidden
+                     accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
+              <div id="sbErr"></div>
+            </td>
+          </tr>
+        </table>
+      </div>
     </div>
   </div>
 
