@@ -30,6 +30,7 @@ type config struct {
 	ttl       time.Duration
 	roomMax   uint32
 	listen    string
+	rooms     *roomService // персистентный реестр палат (может быть nil в тестах)
 }
 
 func mustEnv(k string) string {
@@ -171,6 +172,12 @@ func (c config) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// регистрируем палату в персистентном реестре (best-effort: ошибка
+	// хранилища не должна мешать входу — палата останется неперсистентной)
+	if c.rooms != nil {
+		c.rooms.ensureRoom(req.Room)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(tokenResponse{
 		Token:    jwt,
@@ -189,45 +196,28 @@ func (c config) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func main() {
 	cfg := loadConfig()
 
+	// палаты: персистентный реестр (FS) + per-room звуки/портреты + кик.
+	// Если ROOMS_DIR не создаётся (нет прав) — НЕ роняем сервис: токены и
+	// кик работают, /api/rooms* деградируют в 503.
+	// ВАЖНО: до mux.HandleFunc("/api/token", cfg.handleToken): handleToken —
+	// метод на ЗНАЧЕНИИ config, регистрация копирует cfg; поля, присвоенные
+	// после регистрации, копия не увидит (ловили на ensureRoom == noop).
+	roomsSvc := newRoomService(
+		getEnv("LIVEKIT_URL", "ws://127.0.0.1:7880"),
+		cfg.apiKey, cfg.apiSecret,
+		getEnv("ROOMS_DIR", "/data/rooms"),
+	)
+	cfg.rooms = roomsSvc
+	if !roomsSvc.ok {
+		log.Printf("WARNING: room storage disabled: %s unavailable (token issuing and kick still work)", roomsSvc.root)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/token", cfg.handleToken)
 	mux.HandleFunc("/healthz", cfg.handleHealth)
-
-	// список открытых палат (LiveKit RoomService) — для главной страницы.
-	// Если SFU недоступен, /api/token всё равно должен работать: ошибки видны
-	// только в /api/rooms (502), сервис не падает.
-	rooms := newRoomLister(getEnv("LIVEKIT_URL", "ws://127.0.0.1:7880"), cfg.apiKey, cfg.apiSecret)
-	mux.HandleFunc("/api/rooms", rooms.handleRooms)
-
-	// глобальный soundboard: загрузка/листинг/отдача звуков.
-	// Опциональная фича: если каталог не создаётся (нет прав) — НЕ роняем
-	// сервис целиком, отдаём 503 только на /api/sounds*.
-	sb, sbErr := newSoundboard(getEnv("SOUNDS_DIR", "/data/sounds"))
-	if sbErr != nil {
-		log.Printf("WARNING: soundboard disabled: %v (token issuing still works)", sbErr)
-		mux.HandleFunc("/api/sounds", func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "soundboard disabled", http.StatusServiceUnavailable)
-		})
-		mux.HandleFunc("/api/sounds/", func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "soundboard disabled", http.StatusServiceUnavailable)
-		})
-	} else {
-		sb.routes(mux)
-	}
-
-	// пул аватарок: та же деградация — 503 на /api/avatars* без падения сервиса.
-	av, avErr := newAvatarStore(getEnv("AVATARS_DIR", "/data/avatars"))
-	if avErr != nil {
-		log.Printf("WARNING: avatars disabled: %v (token issuing still works)", avErr)
-		mux.HandleFunc("/api/avatars", func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "avatars disabled", http.StatusServiceUnavailable)
-		})
-		mux.HandleFunc("/api/avatars/", func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "avatars disabled", http.StatusServiceUnavailable)
-		})
-	} else {
-		av.routes(mux)
-	}
+	mux.HandleFunc("/api/rooms", roomsSvc.handleRooms)       // GET: список палат
+	mux.HandleFunc("/api/rooms/", roomsSvc.handleRoomScoped) // DELETE палаты + звуки/портреты
+	mux.HandleFunc("/api/kick", roomsSvc.handleKick)         // выписать участника (кто угодно)
 
 	srv := &http.Server{
 		Addr:              cfg.listen,
@@ -238,13 +228,11 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
-	if sbErr != nil {
-		log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=OFF)", cfg.listen, cfg.ttl, cfg.roomMax)
-	} else {
-		log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, sounds=%s)", cfg.listen, cfg.ttl, cfg.roomMax, sb.dir)
+	storage := "OFF"
+	if roomsSvc.ok {
+		storage = roomsSvc.root
 	}
-	if avErr == nil {
-		log.Printf("avatars: %s", av.dir)
-	}
+	log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, rooms=%s)",
+		cfg.listen, cfg.ttl, cfg.roomMax, storage)
 	log.Fatal(srv.ListenAndServe())
 }

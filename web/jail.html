@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>meetler :: тюрьма</title>
+  <link rel="icon" type="image/png" href="/logo.png" />
+  <style>
+    /* Тюремный корпус: тот же старый форум, но решётки и режим. */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0;
+      font-family: Verdana, Arial, Tahoma, sans-serif; font-size: 12px;
+      background: #2b2b2b; color: #ddd;
+    }
+    a { color: #8fb8ff; }
+
+    #masthead {
+      background: #3a3a3a;
+      background: linear-gradient(#454545, #2f2f2f);
+      color: #fff; padding: 6px 10px; border-bottom: 2px solid #111;
+      display: flex; align-items: center; gap: 10px;
+      text-decoration: none; cursor: pointer;
+    }
+    #masthead:visited, #masthead:active { color: #fff; }
+    #masthead img.logoimg {
+      height: 44px; width: 44px; object-fit: contain;
+      border: 1px solid #111; background: #fff; border-radius: 3px;
+      /* повешен за решётку */
+      filter: grayscale(1) contrast(1.1);
+    }
+    #masthead .logo { font-size: 20px; font-weight: bold; letter-spacing: 1px; }
+    #masthead .logo b { color: #ff5f5f; }
+    #masthead .slogan { font-size: 11px; color: #999; }
+
+    .wrap { max-width: 720px; margin: 16px auto; padding: 0 10px; }
+
+    .navbar {
+      background: #40372a; border: 1px solid #2a2419; padding: 3px 8px;
+      font-size: 11px; color: #cbb98f; margin-bottom: 10px;
+    }
+    .navbar b { color: #ff9c9c; }
+
+    table.jail {
+      width: 100%; border-collapse: collapse; background: #1f1f1f;
+      border: 1px solid #555;
+    }
+    table.jail th {
+      background: #5a0f0f; color: #fff; text-align: left;
+      padding: 5px 10px; font-size: 12px; border: 1px solid #3a0a0a;
+      letter-spacing: 1px;
+    }
+    table.jail td { padding: 10px; border: 1px solid #444; vertical-align: top; }
+
+    .ending {
+      text-align: center; padding: 18px 10px 14px;
+    }
+    .ending img {
+      width: 100%; max-width: 560px; height: auto; display: block;
+      margin: 0 auto 14px; border: 2px solid #777;
+    }
+    .ending h1 {
+      font-size: 26px; margin: 0 0 6px; color: #ff5f5f;
+      letter-spacing: 3px; text-transform: uppercase;
+      text-shadow: 1px 1px 0 #000;
+    }
+    .ending p { margin: 4px 0; color: #ccc; }
+    .ending .small { font-size: 11px; color: #888; }
+
+    .back {
+      display: block; text-align: center; margin-top: 14px;
+    }
+    .back a {
+      display: inline-block; padding: 6px 18px;
+      background: #3c3c3c; border: 2px outset #666; color: #ddd;
+      text-decoration: none; font-weight: bold;
+    }
+    .back a:active { border-style: inset; }
+
+    #foot {
+      max-width: 720px; margin: 12px auto; padding: 6px 8px;
+      font-size: 10px; color: #777; border-top: 1px solid #444; text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <a id="masthead" href="/" title="Вернуться в приёмное отделение">
+    <img class="logoimg" src="/logo.png" alt="meetler" />
+    <div>
+      <div class="logo"><b>meetler</b> :: тюремный корпус</div>
+      <div class="slogan">изолятор особого режима · свиданий нет · передачи через охрану</div>
+    </div>
+  </a>
+
+  <div class="wrap">
+    <div class="navbar">Вы здесь: <b>Тюрьма</b> » Камера №13 » Пожизненно</div>
+
+    <table class="jail">
+      <tr><th>Приговор</th></tr>
+      <tr>
+        <td class="ending">
+          <img src="/jail.jpg" alt="Тюрьма" />
+          <h1>Плохая концовка</h1>
+          <p>вы попали в тюрьму</p>
+          <p class="small">администрация диспансера сочла ваше поведение несовместимым
+          с пребыванием в палате. свобода — по амнистии.</p>
+        </td>
+      </tr>
+    </table>
+
+    <div class="back"><a href="/">» вернуться в приёмное отделение «</a></div>
+  </div>
+
+  <div id="foot">meetler · тюремный корпус · побег не предусмотрен · гойда</div>
+</body>
+</html>

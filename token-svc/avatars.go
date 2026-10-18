@@ -1,9 +1,10 @@
 package main
 
-// Глобальный пул аватарок: загрузка/листинг пользовательских картинок.
+// Галерея портретов ПАЛАТЫ: загрузка/листинг/удаление картинок.
 // Аватарка участника = детерминированный хеш его sid по стабильному списку
 // (клиентская логика) — все зрители видят одну и ту же картинку без сигналинга.
-// Хранилище как у soundboard: AVATARS_DIR (по умолчанию /data/avatars).
+// Файлы живут в ROOMS_DIR/<room>/avatars — у каждой палаты свои портреты,
+// при закрытии палаты удаляются каскадом вместе с ней.
 
 import (
 	"crypto/rand"
@@ -21,27 +22,33 @@ import (
 
 const (
 	maxAvatarBytes = 4 << 20 // 4 MiB на картинку (фото с телефона)
-	maxAvatars     = 200     // потолок пула (anti-flood)
+	maxAvatars     = 200     // потолок на палату (anti-flood)
+	avatarsSub     = "avatars"
 )
 
 type avatarStore struct {
-	dir string
-	mu  sync.Mutex // сериализуем запись
+	root string // ROOMS_DIR; портреты палаты: root/<room>/avatars
+	mu   sync.Mutex
 }
 
 type avatarMeta struct {
 	ID  string `json:"id"`
-	URL string `json:"url"` // /api/avatars/<id>
+	URL string `json:"url"` // /api/rooms/<room>/avatars/<id>
 }
 
-func newAvatarStore(dir string) (*avatarStore, error) {
-	if dir == "" {
-		dir = "/data/avatars"
+func newAvatarStore(root string) *avatarStore {
+	if root == "" {
+		root = "/data/rooms"
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	return &avatarStore{dir: dir}, nil
+	return &avatarStore{root: root}
+}
+
+func (as *avatarStore) dir(room string) string {
+	return filepath.Join(as.root, room, avatarsSub)
+}
+
+func avatarURL(room, id string) string {
+	return "/api/rooms/" + room + "/" + avatarsSub + "/" + id
 }
 
 // разрешённые расширения -> content-type
@@ -75,8 +82,8 @@ func sniffImage(head []byte, ext string) bool {
 	return false
 }
 
-func (as *avatarStore) count() int {
-	entries, _ := os.ReadDir(as.dir)
+func (as *avatarStore) count(room string) int {
+	entries, _ := os.ReadDir(as.dir(room))
 	n := 0
 	for _, e := range entries {
 		if !e.IsDir() && avatarExt[strings.ToLower(filepath.Ext(e.Name()))] != "" {
@@ -86,11 +93,17 @@ func (as *avatarStore) count() int {
 	return n
 }
 
-// GET /api/avatars -> список. ПОРЯДОК СТАБИЛЕН (сортировка по id) — от него
-// зависит детерминированный выбор аватарки хешем на клиентах.
-func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request) {
-	entries, err := os.ReadDir(as.dir)
+// GET /api/rooms/<room>/avatars -> список портретов палаты.
+// ПОРЯДОК СТАБИЛЕН (сортировка по id) — от него зависит детерминированный
+// выбор аватарки хешем на клиентах. Несуществующая палата — пустой список.
+func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request, room string) {
+	entries, err := os.ReadDir(as.dir(room))
 	if err != nil {
+		if os.IsNotExist(err) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
 		http.Error(w, "read dir", http.StatusInternalServerError)
 		return
 	}
@@ -103,18 +116,21 @@ func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request) {
 		if _, ok := avatarExt[strings.ToLower(filepath.Ext(name))]; !ok {
 			continue
 		}
-		out = append(out, avatarMeta{ID: name, URL: "/api/avatars/" + name})
+		out = append(out, avatarMeta{ID: name, URL: avatarURL(room, name)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-// POST /api/avatars (multipart: file) -> загрузка. Открыто для всех, но:
+// POST /api/rooms/<room>/avatars (multipart: file) -> загрузка. Открыто для
+// всех, но:
 //   - размер <= maxAvatarBytes
 //   - расширение из whitelist И magic bytes совпадают
-//   - потолок maxAvatars файлов
-func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request) {
+//   - потолок maxAvatars файлов на палату
+//
+// Каталог палаты создаётся на лету: принести портрет можно и до входа.
+func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAvatarBytes+4096)
 	if err := r.ParseMultipartForm(maxAvatarBytes); err != nil {
 		http.Error(w, "too large or bad form (max 4MiB)", http.StatusBadRequest)
@@ -144,13 +160,18 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
 
-	if as.count() >= maxAvatars {
+	if as.count(room) >= maxAvatars {
 		http.Error(w, "avatar pool full (limit reached)", http.StatusConflict)
 		return
 	}
 
+	dir := as.dir(room)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		http.Error(w, "store", http.StatusInternalServerError)
+		return
+	}
 	id := avatarRandName() + ext
-	dst, err := os.Create(filepath.Join(as.dir, id))
+	dst, err := os.Create(filepath.Join(dir, id))
 	if err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
@@ -158,7 +179,7 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request) {
 	lr := io.LimitReader(io.MultiReader(strings.NewReader(string(head)), file), maxAvatarBytes)
 	if _, err := io.Copy(dst, lr); err != nil {
 		_ = dst.Close()
-		_ = os.Remove(filepath.Join(as.dir, id))
+		_ = os.Remove(filepath.Join(dir, id))
 		http.Error(w, "write", http.StatusInternalServerError)
 		return
 	}
@@ -166,12 +187,11 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(avatarMeta{ID: id, URL: "/api/avatars/" + id})
+	_ = json.NewEncoder(w).Encode(avatarMeta{ID: id, URL: avatarURL(room, id)})
 }
 
-// GET /api/avatars/<id> -> отдать картинку.
-func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/avatars/")
+// GET /api/rooms/<room>/avatars/<id> -> отдать картинку.
+func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request, room, id string) {
 	// path traversal: только базовое имя с известным расширением
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
@@ -182,8 +202,7 @@ func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	p := filepath.Join(as.dir, id)
-	f, err := os.Open(p)
+	f, err := os.Open(filepath.Join(as.dir(room), id))
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -194,11 +213,10 @@ func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, id, time.Now(), f)
 }
 
-// DELETE /api/avatars/<id> -> убрать картинку из пула.
+// DELETE /api/rooms/<room>/avatars/<id> -> убрать картинку из галереи палаты.
 // Намеренно без авторизации: что "лишнее" решает любой пациент.
 // (id — серверный рандом, не пользовательская строка: безопасно)
-func (as *avatarStore) remove(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/avatars/")
+func (as *avatarStore) remove(w http.ResponseWriter, _ *http.Request, room, id string) {
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
@@ -209,7 +227,7 @@ func (as *avatarStore) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	if err := os.Remove(filepath.Join(as.dir, id)); err != nil {
+	if err := os.Remove(filepath.Join(as.dir(room), id)); err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -220,25 +238,30 @@ func (as *avatarStore) remove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (as *avatarStore) routes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/avatars", func(w http.ResponseWriter, r *http.Request) {
+// dispatch роутит /api/rooms/<room>/avatars[/<id>] по методу.
+func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, room string, rest []string) {
+	if len(rest) == 0 {
 		switch r.Method {
 		case http.MethodGet:
-			as.list(w, r)
+			as.list(w, r, room)
 		case http.MethodPost:
-			as.upload(w, r)
+			as.upload(w, r, room)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-	mux.HandleFunc("/api/avatars/", func(w http.ResponseWriter, r *http.Request) {
+		return
+	}
+	if len(rest) == 1 {
+		id := rest[0]
 		switch r.Method {
 		case http.MethodGet:
-			as.serve(w, r)
+			as.serve(w, r, room, id)
 		case http.MethodDelete:
-			as.remove(w, r)
+			as.remove(w, r, room, id)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
+		return
+	}
+	http.Error(w, "not found", http.StatusNotFound)
 }

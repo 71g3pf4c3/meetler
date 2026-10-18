@@ -16,7 +16,7 @@
 	handle /twirp* {
 		reverse_proxy host.docker.internal:7880
 	}
-	@assets path /vendor/* /logo.png /avatar.jpg
+	@assets path /vendor/* /logo.png /avatar.jpg /dav/*
 	handle @assets {
 		header Cache-Control "public, max-age=31536000, immutable"
 		root * /srv/web

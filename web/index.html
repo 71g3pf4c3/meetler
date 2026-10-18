@@ -18,13 +18,15 @@
     }
     a { color: #0000cc; }
 
-    /* шапка форума */
+    /* шапка форума — клик ведёт в приёмное отделение (в корень) */
     #masthead {
       background: #0f5b8a;
       background: linear-gradient(#1a6ea3, #0f5b8a);
       color: #fff; padding: 6px 10px; border-bottom: 2px solid #073d5e;
       display: flex; align-items: center; gap: 10px;
+      text-decoration: none; cursor: pointer;
     }
+    #masthead:visited, #masthead:active { color: #fff; }
     #masthead img.logoimg {
       height: 44px; width: 44px; object-fit: contain;
       border: 1px solid #073d5e; background: #fff; border-radius: 3px;
@@ -118,9 +120,14 @@
       background: #e6c9c9; border: 1px solid #a00; color: #800000;
     }
 
-    /* список открытых палат */
+    /* список палат: ✕ закрывает палату (со всеми звуками/портретами) */
     #roomsBody a { font-weight: bold; }
     #roomsBody td.muted { color: #777; }
+    #roomsBody .roomdel {
+      padding: 0 4px; font-size: 11px; line-height: 14px;
+      background: #e6c9c9; border: 1px solid #a00; color: #800000;
+    }
+    #roomsErr { color: #a00; font-size: 11px; min-height: 0; margin-top: 4px; }
 
     /* конференция */
     #stage { display: none; }
@@ -148,6 +155,18 @@
       background: rgba(0,0,0,.75); border-top-right-radius: 3px;
       font-weight: bold;
     }
+    /* громкость участника и кик — ПОВЕРХ видео, правый верхний угол
+       (absolute позиционируется выше статичного video, поэтому клики
+       доходят до органов управления, а не уходят в видеопоток) */
+    .tile .vol {
+      position: absolute; top: 4px; right: 36px; width: 64px; height: 14px;
+      margin: 0; padding: 0; z-index: 2; cursor: pointer;
+    }
+    .tile .kick {
+      position: absolute; top: 4px; right: 4px; z-index: 2;
+      padding: 0 4px; font-size: 11px; line-height: 14px;
+      background: #e6c9c9; border: 1px solid #a00; color: #800000;
+    }
     /* плейсхолдер при выключенной камере — дефолтная аватарка */
     .tile .ph {
       width: 100%; height: 100%;
@@ -164,13 +183,13 @@
   </style>
 </head>
 <body>
-  <div id="masthead">
+  <a id="masthead" href="/" title="Вернуться в приёмное отделение">
     <img class="logoimg" src="/logo.png" alt="meetler" />
     <div>
       <div class="logo"><b>meetler</b> :: психоневрологический диспансер</div>
       <div class="slogan">селф-хост WebRTC · анонимный вход · приём ведётся без записи и смс</div>
     </div>
-  </div>
+  </a>
 
   <div id="wrap">
     <!-- форма входа как "создать раздачу" -->
@@ -203,14 +222,15 @@
         </tr>
       </table>
 
-      <!-- пул аватарок: каждый пациент получает случайную из галереи -->
+      <!-- пул аватарок ПАЛАТЫ: каждому пациенту — случайный портрет её галереи -->
       <table class="forum" id="avatars">
-        <tr><th colspan="2">Галерея портретов</th></tr>
+        <tr><th colspan="2">Галерея портретов палаты</th></tr>
         <tr>
           <td class="label-cell">В галерее:</td>
           <td>
-            <span class="cnt" id="avatarCount">0</span> портретов — каждому
-            пациенту достаётся случайный при поступлении.
+            <span class="cnt" id="avatarCount">0</span> портретов этой палаты —
+            каждому пациенту достаётся случайный при поступлении.
+            Портреты у каждой палаты свои: укажи палату выше, чтобы принести свой.
             <button id="avatarUploadBtn">+ принести портрет (jpg/png/gif/webp, до 4 МБ)</button>
             <input type="file" id="avatarFile" hidden
                    accept=".jpg,.jpeg,.png,.gif,.webp" />
@@ -220,18 +240,20 @@
         </tr>
       </table>
 
-      <!-- список открытых палат (живой, из LiveKit) -->
+      <!-- палаты: персистентный реестр, живёт пока кто-нибудь не закроет -->
       <table class="forum">
-        <tr><th colspan="3">Открытые палаты</th></tr>
+        <tr><th colspan="4">Палаты — живут, пока кто-нибудь не закроет</th></tr>
         <tr>
           <td class="label-cell">Палата:</td>
           <td style="width: 90px;">Пациентов:</td>
-          <td style="width: 110px;">Открыта:</td>
+          <td style="width: 110px;">Создана:</td>
+          <td style="width: 30px;">—</td>
         </tr>
         <tbody id="roomsBody">
-          <tr><td colspan="3" class="muted">загружается…</td></tr>
+          <tr><td colspan="4" class="muted">загружается…</td></tr>
         </tbody>
       </table>
+      <div id="roomsErr"></div>
     </div>
 
     <!-- конференция -->
@@ -247,9 +269,10 @@
       </div>
       <div id="grid"></div>
 
-      <!-- soundboard: любой пациент может залить звук, каждый становится кнопкой -->
+      <!-- soundboard: ЗВУКИ ЭТОЙ ПАЛАТЫ, любой пациент может залить,
+           каждый становится кнопкой (слышит вся палата) -->
       <table class="forum" id="soundboard">
-        <tr><th>Звуковая аптечка — нажатие слышит вся палата</th></tr>
+        <tr><th>Звуковая аптечка палаты — нажатие слышит вся палата</th></tr>
         <tr>
           <td>
             <div id="sbBtns"></div>

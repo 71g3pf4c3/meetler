@@ -1,8 +1,9 @@
 package main
 
-// Глобальный soundboard: загрузка/листинг пользовательских звуков.
-// Файлы хранятся на диске (SOUNDS_DIR, по умолчанию /data/sounds), общие для всех
-// палат и пользователей. Каждый звук на фронте становится кнопкой (как ГОЙДА).
+// Звуковая аптечка ПАЛАТЫ: загрузка/листинг/удаление звуков.
+// Файлы живут в ROOMS_DIR/<room>/sounds — у каждой палаты своя аптечка,
+// при закрытии палаты удаляются каскадом вместе с ней.
+// Каждый звук на фронте становится кнопкой (как ГОЙДА).
 
 import (
 	"crypto/rand"
@@ -20,29 +21,34 @@ import (
 
 const (
 	maxSoundBytes = 2 << 20 // 2 MiB на файл — короткие семплы для soundboard
-	maxSounds     = 200     // потолок на весь глобальный soundboard (anti-flood)
+	maxSounds     = 200     // потолок на палату (anti-flood)
 	soundsSub     = "sounds"
 )
 
 type soundboard struct {
-	dir string
-	mu  sync.Mutex // сериализуем запись метаданных
+	root string // ROOMS_DIR; звуки палаты: root/<room>/sounds
+	mu   sync.Mutex
 }
 
 type soundMeta struct {
 	ID    string `json:"id"`    // имя файла в хранилище (rand + ext)
 	Label string `json:"label"` // отображаемое имя кнопки
-	URL   string `json:"url"`   // путь для проигрывания: /api/sounds/<id>
+	URL   string `json:"url"`   // /api/rooms/<room>/sounds/<id>
 }
 
-func newSoundboard(dir string) (*soundboard, error) {
-	if dir == "" {
-		dir = "/data/" + soundsSub
+func newSoundboard(root string) *soundboard {
+	if root == "" {
+		root = "/data/rooms"
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	return &soundboard{dir: dir}, nil
+	return &soundboard{root: root}
+}
+
+func (sb *soundboard) dir(room string) string {
+	return filepath.Join(sb.root, room, soundsSub)
+}
+
+func soundURL(room, id string) string {
+	return "/api/rooms/" + room + "/" + soundsSub + "/" + id
 }
 
 // разрешённые расширения -> content-type
@@ -79,10 +85,17 @@ func randName() string {
 	return hex.EncodeToString(b)
 }
 
-// GET /api/sounds -> список звуков. Label берём из .meta-файла (label\n), если есть.
-func (sb *soundboard) list(w http.ResponseWriter, _ *http.Request) {
-	entries, err := os.ReadDir(sb.dir)
+// GET /api/rooms/<room>/sounds -> список звуков палаты.
+// Label берём из .meta-файла (label\n), если есть.
+// Несуществующая палата (её ещё никто не открывал) — пустой список, не ошибка.
+func (sb *soundboard) list(w http.ResponseWriter, _ *http.Request, room string) {
+	entries, err := os.ReadDir(sb.dir(room))
 	if err != nil {
+		if os.IsNotExist(err) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
 		http.Error(w, "read dir", http.StatusInternalServerError)
 		return
 	}
@@ -97,10 +110,10 @@ func (sb *soundboard) list(w http.ResponseWriter, _ *http.Request) {
 			continue // пропускаем .meta и прочее
 		}
 		label := name
-		if b, err := os.ReadFile(filepath.Join(sb.dir, name+".meta")); err == nil {
+		if b, err := os.ReadFile(filepath.Join(sb.dir(room), name+".meta")); err == nil {
 			label = strings.TrimSpace(string(b))
 		}
-		out = append(out, soundMeta{ID: name, Label: label, URL: "/api/sounds/" + name})
+		out = append(out, soundMeta{ID: name, Label: label, URL: soundURL(room, name)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	w.Header().Set("Content-Type", "application/json")
@@ -126,8 +139,8 @@ func sniffAudio(head []byte, ext string) bool {
 	return false
 }
 
-func (sb *soundboard) count() int {
-	entries, _ := os.ReadDir(sb.dir)
+func (sb *soundboard) count(room string) int {
+	entries, _ := os.ReadDir(sb.dir(room))
 	n := 0
 	for _, e := range entries {
 		if !e.IsDir() && soundExt[strings.ToLower(filepath.Ext(e.Name()))] != "" {
@@ -137,11 +150,14 @@ func (sb *soundboard) count() int {
 	return n
 }
 
-// POST /api/sounds (multipart: file, label) -> загрузка. Открыто для всех, но:
+// POST /api/rooms/<room>/sounds (multipart: file, label) -> загрузка.
+// Открыто для всех, но:
 //   - размер <= maxSoundBytes
 //   - расширение из whitelist И magic bytes совпадают
-//   - общий потолок maxSounds файлов (anti-flood)
-func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request) {
+//   - потолок maxSounds файлов на палату (anti-flood)
+//
+// Каталог палаты создаётся на лету: залить звук можно и до первого входа.
+func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request, room string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSoundBytes+4096)
 	if err := r.ParseMultipartForm(maxSoundBytes); err != nil {
 		http.Error(w, "too large or bad form (max 2MiB)", http.StatusBadRequest)
@@ -177,13 +193,18 @@ func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	if sb.count() >= maxSounds {
+	if sb.count(room) >= maxSounds {
 		http.Error(w, "soundboard full (limit reached)", http.StatusConflict)
 		return
 	}
 
+	dir := sb.dir(room)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		http.Error(w, "store", http.StatusInternalServerError)
+		return
+	}
 	id := randName() + ext
-	dst, err := os.Create(filepath.Join(sb.dir, id))
+	dst, err := os.Create(filepath.Join(dir, id))
 	if err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
@@ -192,21 +213,20 @@ func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request) {
 	lr := io.LimitReader(io.MultiReader(strings.NewReader(string(head)), file), maxSoundBytes)
 	if _, err := io.Copy(dst, lr); err != nil {
 		_ = dst.Close()
-		_ = os.Remove(filepath.Join(sb.dir, id))
+		_ = os.Remove(filepath.Join(dir, id))
 		http.Error(w, "write", http.StatusInternalServerError)
 		return
 	}
 	_ = dst.Close()
-	_ = os.WriteFile(filepath.Join(sb.dir, id+".meta"), []byte(label), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, id+".meta"), []byte(label), 0o644)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(soundMeta{ID: id, Label: label, URL: "/api/sounds/" + id})
+	_ = json.NewEncoder(w).Encode(soundMeta{ID: id, Label: label, URL: soundURL(room, id)})
 }
 
-// GET /api/sounds/<id> -> отдать файл звука.
-func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/sounds/")
+// GET /api/rooms/<room>/sounds/<id> -> отдать файл звука.
+func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request, room, id string) {
 	// защита от path traversal: только базовое имя, известное расширение
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
@@ -218,8 +238,7 @@ func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	p := filepath.Join(sb.dir, id)
-	f, err := os.Open(p)
+	f, err := os.Open(filepath.Join(sb.dir(room), id))
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -230,11 +249,10 @@ func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, id, time.Now(), f)
 }
 
-// DELETE /api/sounds/<id> -> удалить звук из аптечки. Без авторизации:
-// что "лишнее" решает любой пациент (как в галерее портретов).
+// DELETE /api/rooms/<room>/sounds/<id> -> удалить звук из аптечки палаты.
+// Без авторизации: что "лишнее" решает любой пациент (как в галерее портретов).
 // id — серверный рандом, не пользовательская строка.
-func (sb *soundboard) remove(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/sounds/")
+func (sb *soundboard) remove(w http.ResponseWriter, _ *http.Request, room, id string) {
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
@@ -245,7 +263,7 @@ func (sb *soundboard) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	if err := os.Remove(filepath.Join(sb.dir, id)); err != nil {
+	if err := os.Remove(filepath.Join(sb.dir(room), id)); err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -253,30 +271,34 @@ func (sb *soundboard) remove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "remove", http.StatusInternalServerError)
 		return
 	}
-	_ = os.Remove(filepath.Join(sb.dir, id+".meta")) // метаданные следом
+	_ = os.Remove(filepath.Join(sb.dir(room), id+".meta")) // метаданные следом
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// routes регистрирует хендлеры soundboard на mux.
-func (sb *soundboard) routes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/sounds", func(w http.ResponseWriter, r *http.Request) {
+// dispatch роутит /api/rooms/<room>/sounds[/<id>] по методу.
+func (sb *soundboard) dispatch(w http.ResponseWriter, r *http.Request, room string, rest []string) {
+	if len(rest) == 0 {
 		switch r.Method {
 		case http.MethodGet:
-			sb.list(w, r)
+			sb.list(w, r, room)
 		case http.MethodPost:
-			sb.upload(w, r)
+			sb.upload(w, r, room)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-	mux.HandleFunc("/api/sounds/", func(w http.ResponseWriter, r *http.Request) {
+		return
+	}
+	if len(rest) == 1 {
+		id := rest[0]
 		switch r.Method {
 		case http.MethodGet:
-			sb.serve(w, r)
+			sb.serve(w, r, room, id)
 		case http.MethodDelete:
-			sb.remove(w, r)
+			sb.remove(w, r, room, id)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
+		return
+	}
+	http.Error(w, "not found", http.StatusNotFound)
 }

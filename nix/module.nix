@@ -300,12 +300,11 @@ in
           "LISTEN_ADDR=127.0.0.1:8080"
           "TOKEN_TTL=${cfg.tokenTTL}"
           "ROOM_MAX_PARTICIPANTS=${toString cfg.roomMaxParticipants}"
-          # список открытых палат (/api/rooms): livekit на том же хосте
+          # список палат (/api/rooms): livekit на том же хосте
           "LIVEKIT_URL=ws://127.0.0.1:7880"
-          # soundboard: персистентное хранилище звуков (DynamicUser-friendly)
-          "SOUNDS_DIR=/var/lib/meetler/sounds"
-          # пул аватарок: рядом, в том же StateDirectory
-          "AVATARS_DIR=/var/lib/meetler/avatars"
+          # персистентный реестр палат: /var/lib/meetler/rooms/<палата>/{sounds,avatars}
+          # (DynamicUser-friendly, в том же StateDirectory)
+          "ROOMS_DIR=/var/lib/meetler/rooms"
         ];
         DynamicUser = true;
         StateDirectory = "meetler";

@@ -6,6 +6,7 @@ import {
   Track,
   VideoPresets,
   LocalAudioTrack,
+  DisconnectReason,
   createLocalScreenTracks,
 } from '/vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
 
@@ -14,6 +15,16 @@ const grid = $('grid');
 const tiles = new Map(); // participant.sid -> { el, videoEl }
 
 let room = null;
+
+// палата, для которой сейчас показываем/льём данные (звуки, портреты):
+// в конференции — её имя; на главной — из поля формы или URL.
+function currentRoom() {
+  if (room && room.name) return room.name;
+  const v = palataFromPath() || ($('room') ? $('room').value.trim() : '');
+  return /^[a-zA-Z0-9_-]{1,64}$/.test(v) ? v : '';
+}
+
+const roomApi = (rm) => '/api/rooms/' + encodeURIComponent(rm);
 
 async function mintToken(roomName, name) {
   const res = await fetch('/api/token', {
@@ -46,8 +57,56 @@ function ensureTile(participant) {
   if (u) ph.style.backgroundImage = `url(${u})`;
   el.appendChild(ph);
   el.appendChild(label);
+
+  // индивидуальная громкость ЭТОГО участника (только у себя)
+  const vol = document.createElement('input');
+  vol.type = 'range';
+  vol.min = '0';
+  vol.max = '100';
+  vol.value = '100';
+  vol.className = 'vol';
+  vol.title = 'громкость участника (у себя)';
+  el.appendChild(vol);
+
+  // кик: кто угодно может выписать кого угодно
+  const kick = document.createElement('button');
+  kick.className = 'kick';
+  kick.textContent = '✕';
+  kick.title = 'Выписать из палаты';
+  kick.onclick = async () => {
+    const who = participant.name || participant.identity;
+    if (!confirm(`Выписать ${who} из палаты?`)) return;
+    try {
+      const res = await fetch('/api/kick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room: room.name, identity: participant.identity }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || res.status);
+    } catch (e) {
+      $('err').textContent = 'Не удалось выписать: ' + (e.message || e);
+    }
+  };
+  el.appendChild(kick);
+
   grid.appendChild(el);
-  t = { el, videoEl: null, ph, label };
+  t = {
+    el, videoEl: null, ph, label,
+    identity: participant.identity,
+    audioEl: null, audioTrack: null, audioVol: 1,
+  };
+  vol.addEventListener('input', () => {
+    t.audioVol = vol.value / 100;
+    // громкость применяем двумя путями: напрямую к своему <audio>-элементу
+    // и через livekit (setVolume применяет ко всем attached элементам трека)
+    if (t.audioEl) {
+      t.audioEl.volume = t.audioVol;
+      t.audioEl.muted = t.audioVol === 0;
+    }
+    if (t.audioTrack && t.audioTrack.setVolume) {
+      try { t.audioTrack.setVolume(t.audioVol); } catch (_) {}
+    }
+  });
   tiles.set(participant.sid, t);
   return t;
 }
@@ -82,6 +141,13 @@ function attachTrack(participant, track) {
     el.autoplay = true;
     el.style.display = 'none';
     document.body.appendChild(el);
+    // применить выбранную ползунком громкость (мог выставить до attach)
+    if (t.audioVol !== undefined) {
+      el.volume = t.audioVol;
+      el.muted = t.audioVol === 0;
+    }
+    t.audioEl = el;
+    t.audioTrack = track;
     // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
     // Главный рычаг latency на стороне получателя (экономит 50-150ms).
     try {
@@ -110,6 +176,8 @@ async function join() {
   // палата из URL имеет приоритет; иначе из поля формы
   const roomName = palataFromPath() || $('room').value.trim();
   const name = $('name').value.trim();
+  // запомнить имя: не заставляем вводить заново при каждом визите
+  if (name) localStorage.setItem('meetlerName', name);
   if (!roomName) {
     $('err').textContent = 'Укажите номер палаты';
     return;
@@ -210,6 +278,10 @@ async function join() {
     const crumb = $('roomCrumb');
     if (crumb) crumb.textContent = roomName;
     refreshSoundboard();
+    refreshAvatars(); // галерея этой палаты — для тайлов (пул мог обновиться)
+    // пока в палате — подхватывать портреты, которые принесли другие
+    if (avatarsTimer) clearInterval(avatarsTimer);
+    avatarsTimer = setInterval(refreshAvatars, 30000);
     startStats();
   } catch (e) {
     $('err').textContent = 'Ошибка входа: ' + (e.message || e);
@@ -221,8 +293,23 @@ function wireRoomEvents(r) {
   r.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
     attachTrack(participant, track);
   });
-  r.on(RoomEvent.TrackUnsubscribed, (track) => {
+  r.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
     detachTrack(track);
+    // видео ушло (unsubscribe) — без этого тайл оставался чёрным
+    if (track.kind === Track.Kind.Video) {
+      const t = tiles.get(participant.sid);
+      if (t) {
+        t.videoEl = null;
+        t.ph.style.display = ''; // вернуть аватарку
+      }
+    }
+  });
+  // mute/unmute камеры у удалённых: чёрный экран ↔ аватарка
+  r.on(RoomEvent.TrackMuted, (pub, participant) => {
+    if (pub.kind === Track.Kind.Video) setTileVideo(participant, false);
+  });
+  r.on(RoomEvent.TrackUnmuted, (pub, participant) => {
+    if (pub.kind === Track.Kind.Video) setTileVideo(participant, true);
   });
   r.on(RoomEvent.ParticipantConnected, (p) => ensureTile(p));
   r.on(RoomEvent.ParticipantDisconnected, (p) => removeTile(p));
@@ -232,8 +319,32 @@ function wireRoomEvents(r) {
       attachLocalVideo(pub.track);
     }
   });
-  r.on(RoomEvent.Disconnected, () => {
+  // стоп-шеринг / выключение своей камеры: видео снято — вернуть аватарку
+  r.on(RoomEvent.LocalTrackUnpublished, (pub) => {
+    if (pub.kind === Track.Kind.Video) removeLocalVideo();
+  });
+  r.on(RoomEvent.LocalTrackMuted, (pub) => {
+    if (pub.kind === Track.Kind.Video) setLocalVideoVisible(false);
+  });
+  r.on(RoomEvent.LocalTrackUnmuted, (pub) => {
+    if (pub.kind === Track.Kind.Video) setLocalVideoVisible(true);
+  });
+  r.on(RoomEvent.Disconnected, (reason) => {
+    // личный кик (RemoveParticipant) → страница "тюрьма" с плохой концовкой
+    if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+      location.href = '/jail.html';
+      return;
+    }
+    // отличаем свой уход/закрытие палаты от потери связи: сообщение об ошибке
+    // показываем только когда человек не сам нажал "Выписаться"
+    const unexpected = !selfLeaving && reason !== DisconnectReason.CLIENT_INITIATED;
+    selfLeaving = false;
     cleanup();
+    if (unexpected) {
+      $('err').textContent = reason === DisconnectReason.ROOM_DELETED
+        ? 'Палату закрыли.'
+        : 'Соединение с палатой потерялось.';
+    }
   });
   // Зелёная подсветка говорящих. ActiveSpeakersChanged даёт актуальный список
   // активных спикеров (включая локального участника).
@@ -289,6 +400,32 @@ function attachLocalVideo(track) {
   localTile.insertBefore(v, localTile.firstChild);
 }
 
+// своё видео снято целиком (стоп-шеринг): убрать элемент, показать аватарку
+function removeLocalVideo() {
+  if (!localTile) return;
+  const v = localTile.querySelector('video');
+  if (v) v.remove();
+  const ph = localTile.querySelector('.ph');
+  if (ph) ph.style.display = '';
+}
+
+// mute/unmute своей камеры: видео есть но не идёт ↔ аватарка
+function setLocalVideoVisible(show) {
+  if (!localTile) return;
+  const v = localTile.querySelector('video');
+  if (v) v.style.display = show ? '' : 'none';
+  const ph = localTile.querySelector('.ph');
+  if (ph) ph.style.display = show && v ? 'none' : '';
+}
+
+// показать/спрятать видео удалённого участника (mute камеры)
+function setTileVideo(participant, show) {
+  const t = tiles.get(participant.sid);
+  if (!t) return;
+  if (t.videoEl) t.videoEl.style.display = show ? '' : 'none';
+  t.ph.style.display = show && t.videoEl ? 'none' : '';
+}
+
 // controls
 $('joinBtn').onclick = join;
 $('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
@@ -296,6 +433,9 @@ $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); })
 
 // URL-резолв палаты (как jitsi): /<palata> → при входе спрашиваем только ник.
 (function initFromUrl() {
+  // сохранённое имя из прошлого визита
+  const saved = localStorage.getItem('meetlerName');
+  if (saved) $('name').value = saved;
   const palata = palataFromPath();
   if (palata) {
     // прячем строку выбора палаты, оставляем только ник
@@ -404,12 +544,12 @@ function sbVolume() {
   });
 })();
 
-// --- панель soundboard: список кнопок с сервера + загрузка ---
+// --- панель soundboard: список кнопок с сервера + загрузка (всё в ЭТОЙ палате) ---
 async function refreshSoundboard() {
   const box = $('sbBtns');
-  if (!box) return;
+  if (!box || !room) return;
   try {
-    const res = await fetch('/api/sounds');
+    const res = await fetch(roomApi(room.name) + '/sounds');
     // пустой список приходит как JSON null (Go nil slice)
     const sounds = (await res.json()) || [];
     box.innerHTML = '';
@@ -448,10 +588,11 @@ async function refreshSoundboard() {
 }
 
 async function uploadSound(file, label) {
+  if (!room) throw new Error('не в палате');
   const fd = new FormData();
   fd.append('file', file);
   if (label) fd.append('label', label);
-  const res = await fetch('/api/sounds', { method: 'POST', body: fd });
+  const res = await fetch(roomApi(room.name) + '/sounds', { method: 'POST', body: fd });
   if (!res.ok) throw new Error((await res.text()) || res.status);
 }
 
@@ -483,13 +624,18 @@ $('sbFile').onchange = async () => {
   }
 };
 
-// --- список открытых палат на главной (GET /api/rooms, LiveKit ListRooms) ---
+// --- список палат на главной (GET /api/rooms: персистентный реестр ∪ живые) ---
 function fmtAge(unixSec) {
   const s = Math.max(0, Math.floor(Date.now() / 1000 - unixSec));
   if (s < 60) return 'только что';
   if (s < 3600) return Math.floor(s / 60) + ' мин';
   if (s < 86400) return Math.floor(s / 3600) + ' ч';
   return Math.floor(s / 86400) + ' дн';
+}
+
+async function deleteRoom(name) {
+  const res = await fetch('/api/rooms/' + encodeURIComponent(name), { method: 'DELETE' });
+  if (!res.ok) throw new Error((await res.text()) || res.status);
 }
 
 async function refreshRooms() {
@@ -503,9 +649,9 @@ async function refreshRooms() {
     if (!rooms.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.colSpan = 3;
+      td.colSpan = 4;
       td.className = 'muted';
-      td.textContent = 'тихо — открытых палат нет';
+      td.textContent = 'тихо — палат нет';
       tr.appendChild(td);
       body.appendChild(tr);
       return;
@@ -523,7 +669,24 @@ async function refreshRooms() {
       tdCnt.textContent = String(r.participants);
       const tdAge = document.createElement('td');
       tdAge.textContent = fmtAge(r.createdAt);
-      tr.append(tdName, tdCnt, tdAge);
+      const tdDel = document.createElement('td');
+      // закрыть палату может любой (как удалить звук/портрет)
+      const del = document.createElement('button');
+      del.className = 'roomdel';
+      del.textContent = '✕';
+      del.title = 'Закрыть палату';
+      del.onclick = async () => {
+        if (!confirm(`Закрыть палату ${r.name}?\nВсе её звуки и портреты будут удалены, пациенты — выписаны.`)) return;
+        try {
+          await deleteRoom(r.name);
+          await refreshRooms();
+        } catch (e) {
+          const re = $('roomsErr');
+          if (re) re.textContent = 'Не удалось закрыть: ' + (e.message || e);
+        }
+      };
+      tdDel.appendChild(del);
+      tr.append(tdName, tdCnt, tdAge, tdDel);
       body.appendChild(tr);
     }
   } catch (_) {
@@ -534,30 +697,40 @@ async function refreshRooms() {
 refreshRooms();
 setInterval(refreshRooms, 30000);
 
-// --- пул аватарок: случайная картинка каждому участнику ---
+// --- пул аватарок ПАЛАТЫ: случайная картинка каждому участнику ---
 // Аватарка = детерминированный хеш sid по СТАБИЛЬНОМУ списку с сервера
 // (list отсортирован по id). Все зрители вычисляют одинаковую картинку —
 // никакой синхронизации не нужно. Список пуст → дефолтный /avatar.jpg.
-let avatarUrls = [];
-
-async function deleteAvatar(id) {
-  const res = await fetch('/api/avatars/' + encodeURIComponent(id), { method: 'DELETE' });
-  if (!res.ok) throw new Error((await res.text()) || res.status);
-}
+// Портреты у каждой палаты СВОИ (иерархия: палата → галерея).
+let avatarList = []; // [{id, url}] текущей палаты
+let avatarsTimer = null; // опрос галереи, пока в палате (успел кто-то залить — все увидят)
 
 async function refreshAvatars() {
-  try {
-    const res = await fetch('/api/avatars');
-    const avatars = (await res.json()) || [];
-    avatarUrls = avatars.map((a) => a.url);
-    // перекрасить уже существующие тайлы (вдруг пул обновился)
-    document.querySelectorAll('.tile .ph').forEach(applyAvatarToPh);
-    const cnt = $('avatarCount');
-    if (cnt) cnt.textContent = avatarUrls.length;
-    // превью галереи на главной; удалить может любой — "лишнее" решает толпа
-    const box = $('avatarThumbs');
+  const rm = currentRoom();
+  const box = $('avatarThumbs');
+  const cnt = $('avatarCount');
+  if (!rm) {
+    avatarList = [];
+    if (cnt) cnt.textContent = '0';
     if (box) {
       box.innerHTML = '';
+      box.textContent = 'укажи палату выше — портреты у каждой свои';
+    }
+    // сбросить фоны тайлов к дефолтной аватарке
+    document.querySelectorAll('.tile .ph').forEach((ph) => { ph.style.backgroundImage = ''; });
+    return;
+  }
+  try {
+    const res = await fetch(roomApi(rm) + '/avatars');
+    const avatars = (await res.json()) || [];
+    avatarList = avatars;
+    if (cnt) cnt.textContent = String(avatars.length);
+    // перекрасить уже существующие тайлы (вдруг пул обновился)
+    document.querySelectorAll('.tile .ph').forEach(applyAvatarToPh);
+    // превью галереи на главной; удалить может любой — "лишнее" решает толпа
+    if (box) {
+      box.innerHTML = '';
+      if (!avatars.length) box.textContent = 'в этой палате пока никто не принёс портрет — пациенты ходят со стандартными';
       for (const a of avatars) {
         const th = document.createElement('div');
         th.className = 'thumb';
@@ -572,7 +745,9 @@ async function refreshAvatars() {
         del.onclick = async () => {
           if (!confirm('Убрать портрет из галереи?')) return;
           try {
-            await deleteAvatar(a.id);
+            // url уже содержит палату — удаляем прямо по нему
+            const res = await fetch(a.url, { method: 'DELETE' });
+            if (!res.ok) throw new Error((await res.text()) || res.status);
             await refreshAvatars(); // обновить счётчик/превью и перекрасить тайлы
           } catch (e) {
             const avErr = $('avatarErr');
@@ -593,9 +768,14 @@ function strHash(s) {
   return Math.abs(h);
 }
 
+// дефолтный набор аватарок: работает из коробки, до того как в палату принесли
+// портреты. Порядок стабильный (файлы 1..8) — детерминизм хеша сохраняется.
+const DEFAULT_AVATARS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `/dav/${n}.svg`);
+
 function avatarUrlFor(sid) {
-  if (!avatarUrls.length) return null;
-  return avatarUrls[strHash(sid) % avatarUrls.length];
+  // приоритет у портретов палаты; пусто — стандартный набор
+  const pool = avatarList.length ? avatarList.map((a) => a.url) : DEFAULT_AVATARS;
+  return pool[strHash(sid) % pool.length];
 }
 
 function applyAvatarToPh(ph) {
@@ -603,10 +783,11 @@ function applyAvatarToPh(ph) {
   const sid = tile && tile.dataset.sid;
   if (!sid) return;
   const u = avatarUrlFor(sid);
-  if (u) ph.style.backgroundImage = `url(${u})`;
+  // '' → фон из CSS (дефолтный /avatar.jpg)
+  ph.style.backgroundImage = u ? `url(${u})` : '';
 }
 
-// загрузка портрета (как звуки: скрытый input за кнопкой)
+// загрузка портрета (как звуки: скрытый input за кнопкой) — в текущую палату
 $('avatarUploadBtn').onclick = () => $('avatarFile').click();
 $('avatarFile').onchange = async () => {
   const f = $('avatarFile').files[0];
@@ -615,13 +796,15 @@ $('avatarFile').onchange = async () => {
   if (avErr) avErr.textContent = '';
   if (!f) return;
   try {
+    const rm = currentRoom();
+    if (!rm) throw new Error('сначала укажи палату — портреты у каждой свои');
     if (f.size > 4 * 1024 * 1024) throw new Error('больше 4 МБ — не влезет');
     if (!/\.(jpe?g|png|gif|webp)$/i.test(f.name)) {
       throw new Error('разрешены jpg/png/gif/webp');
     }
     const fd = new FormData();
     fd.append('file', f);
-    const res = await fetch('/api/avatars', { method: 'POST', body: fd });
+    const res = await fetch(roomApi(rm) + '/avatars', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.text()) || res.status);
     await refreshAvatars();
   } catch (e) {
@@ -630,6 +813,12 @@ $('avatarFile').onchange = async () => {
 };
 
 refreshAvatars();
+// на главной галерея следует за полем «Палата №» (debounce — дешёвый JSON)
+let avDebounce = null;
+$('room').addEventListener('input', () => {
+  clearTimeout(avDebounce);
+  avDebounce = setTimeout(refreshAvatars, 250);
+});
 
 // --- Запись последних 15 секунд микса комнаты ---
 // PCM-кольцевой буфер (ScriptProcessor). Даёт РОВНО последние 15с и валидный файл
@@ -733,7 +922,12 @@ $('recBtn').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 };
 
-$('leaveBtn').onclick = () => { if (room) room.disconnect(); };
+// свой уход: помечаем, чтобы Disconnected не показал "вас выписали"
+let selfLeaving = false;
+$('leaveBtn').onclick = () => {
+  selfLeaving = true;
+  if (room) room.disconnect();
+};
 
 function cleanup() {
   // сначала глушим колбэк записи: ScriptProcessor может тикнуть между
@@ -746,6 +940,8 @@ function cleanup() {
   tiles.forEach((t) => t.el.remove());
   tiles.clear();
   if (localTile) { localTile.remove(); localTile = null; }
+  if (avatarsTimer) { clearInterval(avatarsTimer); avatarsTimer = null; }
+  room = null; // currentRoom() дальше читает поле формы, а не мёртвую Room
   $('stage').style.display = 'none';
   $('join').style.display = 'block';
   $('joinBtn').disabled = false;
