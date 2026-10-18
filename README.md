@@ -125,6 +125,36 @@ make turn-cert && docker compose restart livekit
 LiveKit отдаёт Prometheus-метрики на `:6789/metrics` (host-network). Скрейпь своим
 Prometheus/VictoriaMetrics. Логи структурные (JSON) → VictoriaLogs.
 
+## Telegram-мост (tgbridge)
+
+Бот, который транслирует в палату пересланные ему медиа и озвучивает текст.
+
+- Пересылаешь боту **голосовое / аудио / видео / видео-кружок** → проигрывается у
+  всех в палате (ffmpeg транскод: аудио→opus, видео→vp8+opus).
+- Текст с **@упоминанием бота** или с **#палатой** → озвучка через piper (TTS).
+- Палата (приоритет): `#6` или `/palata 6` в сообщении → сохранённая командой
+  `/palata 6` → `DEFAULT_PALATA`.
+
+Бот — headless-participant LiveKit (identity `tgbridge`), держит `LIVEKIT_API_KEY/
+SECRET`, подключается к палате по `ws://127.0.0.1:7880`, льёт и отключается по idle.
+
+docker-compose (профиль `telegram`, не поднимается по умолчанию):
+```bash
+# в .env: TELEGRAM_BOT_TOKEN=...  (ключи livekit уже есть)
+docker compose --profile telegram up -d --build
+```
+TTS: смонтируй piper .onnx модель и задай `PIPER_MODEL=/models/ru.onnx` (без неё
+озвучка текста выключена, медиа работает).
+
+NixOS:
+```nix
+services.meetler.telegram = {
+  enable = true;
+  environmentFile = "/run/secrets/tg.env";   # TELEGRAM_BOT_TOKEN=...
+  piperModel = "/var/lib/piper/ru.onnx";      # null = TTS off
+};
+```
+
 ## Деплой через NixOS (альтернатива docker-compose)
 
 Flake экспортирует `nixosModules.default`, который оборачивает официальный

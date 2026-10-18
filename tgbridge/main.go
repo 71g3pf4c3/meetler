@@ -1,0 +1,310 @@
+// tgbridge — Telegram-бот, транслирующий пересланные голосовые/видео/аудио и
+// озвученный текст в палату meetler (LiveKit) как headless-participant.
+//
+// Палата определяется (по убыванию приоритета):
+//  1. явно в сообщении/подписи:  "#6" или "/palata 6"
+//  2. сохранённая для этого юзера (командой /palata 6)
+//  3. дефолтная (DEFAULT_PALATA)
+//
+// Триггеры:
+//   - voice / audio / video / video_note  -> транскод ffmpeg -> публикация
+//   - текст с упоминанием бота (@bot) ИЛИ с "#<палата>"  -> TTS (piper) -> публикация
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/mymmrac/telego"
+)
+
+type config struct {
+	botToken   string
+	lkURL      string
+	lkKey      string
+	lkSecret   string
+	defPalata  string
+	piperBin   string
+	piperModel string
+}
+
+func env(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+func mustEnv(k string) string {
+	v := os.Getenv(k)
+	if v == "" {
+		log.Fatalf("missing env %s", k)
+	}
+	return v
+}
+
+func loadConfig() config {
+	return config{
+		botToken:   mustEnv("TELEGRAM_BOT_TOKEN"),
+		lkURL:      env("LIVEKIT_URL", "ws://127.0.0.1:7880"),
+		lkKey:      mustEnv("LIVEKIT_API_KEY"),
+		lkSecret:   mustEnv("LIVEKIT_API_SECRET"),
+		defPalata:  env("DEFAULT_PALATA", "telegram"),
+		piperBin:   os.Getenv("PIPER_BIN"),
+		piperModel: os.Getenv("PIPER_MODEL"),
+	}
+}
+
+// --- per-user выбранная палата ---
+type palataStore struct {
+	mu sync.Mutex
+	m  map[int64]string
+}
+
+func newPalataStore() *palataStore { return &palataStore{m: map[int64]string{}} }
+func (s *palataStore) get(uid int64, def string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.m[uid]; ok {
+		return v
+	}
+	return def
+}
+func (s *palataStore) set(uid int64, v string) {
+	s.mu.Lock()
+	s.m[uid] = v
+	s.mu.Unlock()
+}
+
+// валидный номер палаты = имя комнаты livekit (как в token-svc)
+var palataRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// извлечь палату из текста: "#6" или "/palata 6" / "/room 6"
+var hashRe = regexp.MustCompile(`#([a-zA-Z0-9_-]{1,64})`)
+var cmdRe = regexp.MustCompile(`(?i)^/(?:palata|room)\s+([a-zA-Z0-9_-]{1,64})`)
+
+func palataFromText(s string) string {
+	if m := cmdRe.FindStringSubmatch(strings.TrimSpace(s)); m != nil {
+		return m[1]
+	}
+	if m := hashRe.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+type app struct {
+	cfg   config
+	bot   *telego.Bot
+	me    string // username бота в нижнем регистре, без @
+	pub   *Publisher
+	tts   *TTS
+	store *palataStore
+}
+
+func main() {
+	cfg := loadConfig()
+
+	bot, err := telego.NewBot(cfg.botToken, telego.WithDefaultLogger(false, true))
+	if err != nil {
+		log.Fatalf("bot init: %v", err)
+	}
+	ctx := context.Background()
+	me, err := bot.GetMe(ctx)
+	if err != nil {
+		log.Fatalf("getMe: %v", err)
+	}
+
+	a := &app{
+		cfg:   cfg,
+		bot:   bot,
+		me:    strings.ToLower(me.Username),
+		pub:   NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
+		tts:   NewTTS(cfg.piperBin, cfg.piperModel),
+		store: newPalataStore(),
+	}
+	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
+
+	updates, err := bot.UpdatesViaLongPolling(ctx, nil)
+	if err != nil {
+		log.Fatalf("long polling: %v", err)
+	}
+	for u := range updates {
+		if u.Message != nil {
+			go a.handle(ctx, u.Message)
+		}
+	}
+}
+
+func (a *app) reply(ctx context.Context, chatID int64, text string) {
+	_, _ = a.bot.SendMessage(ctx, &telego.SendMessageParams{
+		ChatID: telego.ChatID{ID: chatID}, Text: text,
+	})
+}
+
+func (a *app) handle(ctx context.Context, m *telego.Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("handle panic: %v", r)
+		}
+	}()
+
+	uid := int64(0)
+	if m.From != nil {
+		uid = m.From.ID
+	}
+	caption := m.Caption
+	text := m.Text
+
+	// команда установки палаты: "/palata 6" без медиа -> запомнить и выйти
+	if text != "" && m.Voice == nil && m.Audio == nil && m.Video == nil && m.VideoNote == nil {
+		if p := cmdRe.FindStringSubmatch(strings.TrimSpace(text)); p != nil {
+			a.store.set(uid, p[1])
+			a.reply(ctx, m.Chat.ID, "Палата запомнена: "+p[1])
+			return
+		}
+	}
+
+	// определить палату: явная в тексте/подписи -> сохранённая -> дефолт
+	palata := palataFromText(caption)
+	if palata == "" {
+		palata = palataFromText(text)
+	}
+	if palata == "" {
+		palata = a.store.get(uid, a.cfg.defPalata)
+	}
+	if !palataRe.MatchString(palata) {
+		a.reply(ctx, m.Chat.ID, "Неверный номер палаты.")
+		return
+	}
+
+	// --- медиа ---
+	var fileID string
+	switch {
+	case m.Voice != nil:
+		fileID = m.Voice.FileID
+	case m.Audio != nil:
+		fileID = m.Audio.FileID
+	case m.VideoNote != nil:
+		fileID = m.VideoNote.FileID
+	case m.Video != nil:
+		fileID = m.Video.FileID
+	}
+
+	if fileID != "" {
+		isVideo := m.VideoNote != nil || m.Video != nil
+		if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
+			log.Printf("streamFile: %v", err)
+			a.reply(ctx, m.Chat.ID, "Не удалось проиграть: "+err.Error())
+			return
+		}
+		a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
+		return
+	}
+
+	// --- текст: озвучить, если упомянут бот (@bot) или задана #палата ---
+	if text != "" {
+		mentioned := a.me != "" && strings.Contains(strings.ToLower(text), "@"+a.me)
+		hasHash := hashRe.MatchString(text)
+		if mentioned || hasHash {
+			if !a.tts.enabled() {
+				a.reply(ctx, m.Chat.ID, "TTS выключен (нет piper).")
+				return
+			}
+			spoken := a.cleanText(text)
+			if err := a.streamTTS(ctx, palata, spoken); err != nil {
+				log.Printf("streamTTS: %v", err)
+				a.reply(ctx, m.Chat.ID, "TTS ошибка: "+err.Error())
+				return
+			}
+			a.reply(ctx, m.Chat.ID, "✓ озвучено в палате "+palata)
+		}
+	}
+}
+
+// cleanText убирает @упоминание бота и #палату из озвучиваемого текста.
+func (a *app) cleanText(s string) string {
+	if a.me != "" {
+		s = regexp.MustCompile(`(?i)@`+regexp.QuoteMeta(a.me)).ReplaceAllString(s, "")
+	}
+	s = hashRe.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
+func (a *app) streamFile(ctx context.Context, palata, fileID string, isVideo bool) error {
+	dir, cleanup, err := tmpDir()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	src, err := a.download(ctx, fileID, dir)
+	if err != nil {
+		return err
+	}
+	if isVideo {
+		ivf, ogg, err := toVideo(ctx, src, dir)
+		if err != nil {
+			return err
+		}
+		return a.pub.PublishVideo(palata, ivf, ogg)
+	}
+	ogg, err := toOgg(ctx, src, dir)
+	if err != nil {
+		return err
+	}
+	return a.pub.PublishAudio(palata, ogg)
+}
+
+func (a *app) streamTTS(ctx context.Context, palata, text string) error {
+	dir, cleanup, err := tmpDir()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	ogg, err := a.tts.Synthesize(ctx, text, dir)
+	if err != nil {
+		return err
+	}
+	return a.pub.PublishAudio(palata, ogg)
+}
+
+// download тянет файл Telegram в dir, возвращает путь.
+func (a *app) download(ctx context.Context, fileID, dir string) (string, error) {
+	f, err := a.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
+	if err != nil {
+		return "", fmt.Errorf("getFile: %w", err)
+	}
+	url := a.bot.FileDownloadURL(f.FilePath)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download status %d", resp.StatusCode)
+	}
+	name := filepath.Base(f.FilePath)
+	if name == "" || name == "." {
+		name = "input"
+	}
+	dst := filepath.Join(dir, name)
+	out, err := os.Create(dst)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return "", err
+	}
+	return dst, nil
+}

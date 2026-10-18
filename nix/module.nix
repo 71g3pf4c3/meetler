@@ -16,6 +16,7 @@
 let
   cfg = config.services.meetler;
   tokenSvc = self.packages.${pkgs.system}.token-svc;
+  tgbridge = self.packages.${pkgs.system}.tgbridge;
   web = mkWeb pkgs;
 
   proxyGroup = if cfg.reverseProxy == "nginx" then "nginx" else "caddy";
@@ -102,6 +103,30 @@ in
         Встроенный TURN/TLS на 5349. Требует выписанного ACME-серта для domain.
         На самом первом деплое (серта ещё нет) можно выставить false, затем true.
       '';
+    };
+
+    telegram = {
+      enable = lib.mkEnableOption "Telegram-мост (tgbridge): медиа и TTS в палату";
+      environmentFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          EnvironmentFile с TELEGRAM_BOT_TOKEN. Секрет вне nix store.
+        '';
+      };
+      defaultPalata = lib.mkOption {
+        type = lib.types.str;
+        default = "telegram";
+        description = "Палата по умолчанию, если в сообщении не указана #палата.";
+      };
+      piperModel = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Путь к piper .onnx модели для озвучки текста (@бот/#палата).
+          null = TTS выключен (медиа всё равно работает).
+        '';
+      };
     };
   };
 
@@ -221,6 +246,37 @@ in
         PrivateDevices = true;
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
         SystemCallFilter = [ "@system-service" ];
+      };
+    };
+
+    # --- tgbridge (Telegram-мост), опционально ---
+    systemd.services.meetler-tgbridge = lib.mkIf cfg.telegram.enable {
+      description = "meetler Telegram media/TTS bridge";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" "livekit.service" ];
+      wants = [ "network-online.target" ];
+      # ffmpeg (транскод) + piper (TTS) в PATH
+      path = [ pkgs.ffmpeg pkgs.piper-tts ];
+      serviceConfig = {
+        ExecStart = "${lib.getExe tgbridge}";
+        # LIVEKIT_API_KEY/SECRET берём из того же файла, что и token-svc (одна пара);
+        # TELEGRAM_BOT_TOKEN — из telegram.environmentFile.
+        EnvironmentFile =
+          [ cfg.tokenEnvironmentFile ]
+          ++ lib.optional (cfg.telegram.environmentFile != null) cfg.telegram.environmentFile;
+        Environment = [
+          "LIVEKIT_URL=ws://127.0.0.1:7880"
+          "DEFAULT_PALATA=${cfg.telegram.defaultPalata}"
+        ] ++ lib.optional (cfg.telegram.piperModel != null) "PIPER_MODEL=${cfg.telegram.piperModel}"
+          ++ lib.optional (cfg.telegram.piperModel != null) "PIPER_BIN=${pkgs.piper-tts}/bin/piper";
+        DynamicUser = true;
+        Restart = "on-failure";
+        RestartSec = "5s";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
       };
     };
 

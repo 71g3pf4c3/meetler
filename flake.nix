@@ -21,6 +21,7 @@
       {
         packages = {
           token-svc = pkgs.callPackage ./nix/token-svc.nix { };
+          tgbridge = pkgs.callPackage ./nix/tgbridge.nix { };
           web = mkWeb pkgs;
           default = pkgs.callPackage ./nix/token-svc.nix { };
         };
