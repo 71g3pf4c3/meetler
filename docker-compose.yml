@@ -1,0 +1,78 @@
+# hit-meet — self-hosted WebRTC conferencing (LiveKit SFU) с анонимным входом.
+#
+# Media networking (критично, читай README):
+#   - LiveKit SFU раздаёт RTP по UDP 50000-60000 → эти порты НЕ за прокси, host-level.
+#   - TURN-over-TLS на 5349 для клиентов за firewall (fallback, когда UDP зарезан).
+#   - Caddy терминирует TLS на 443 для сигналинга (wss) + статики клиента + token API.
+#   - TURN/TLS тоже слушает host-level на 5349, Caddy его НЕ проксирует (это не HTTP).
+#
+# UDP media НЕ использует Docker userland proxy (медленный, ломает ICE):
+#   network_mode: host для livekit — самый надёжный путь для self-host одной ноды.
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    restart: unless-stopped
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    restart: unless-stopped
+    # host network: UDP media (50000-60000) и TURN/TLS (5349) идут напрямую на
+    # публичный IP хоста без userland proxy. Это убирает SNAT-проблемы ICE.
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+      - ./certs:/certs:ro   # TLS cert/key для встроенного TURN (см. README)
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  token-svc:
+    build: ./token-svc
+    restart: unless-stopped
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      TOKEN_TTL: ${TOKEN_TTL:-6h}
+      ROOM_MAX_PARTICIPANTS: ${ROOM_MAX_PARTICIPANTS:-30}
+      LISTEN_ADDR: ":8080"
+    networks: [internal]
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv/web:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN}
+    networks: [internal]
+    # livekit работает в host-network, поэтому его signaling (127.0.0.1:7880)
+    # с точки зрения Caddy достижим через host-gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - token-svc
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

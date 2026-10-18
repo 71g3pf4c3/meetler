@@ -1,0 +1,27 @@
+# Caddy: TLS (авто-ACME) для сигналинга, статики клиента и token API.
+# Медиа (UDP) и TURN/TLS идут МИМО Caddy напрямую на host — здесь только HTTP/WS.
+
+{$SITE_DOMAIN} {
+	encode zstd gzip
+
+	# token API → Go-сервис в internal-сети
+	handle /api/* {
+		reverse_proxy token-svc:8080
+	}
+
+	# LiveKit signaling (wss) + RoomService. livekit в host-network → host-gateway:7880.
+	# Caddy проксирует WebSocket upgrade прозрачно.
+	handle /rtc* {
+		reverse_proxy host.docker.internal:7880
+	}
+	handle /twirp* {
+		reverse_proxy host.docker.internal:7880
+	}
+
+	# статика браузерного клиента
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

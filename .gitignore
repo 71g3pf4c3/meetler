@@ -1,0 +1,16 @@
+# secrets / local config — НЕ коммитить
+.env
+.env.bak
+
+# рендеренный из шаблона конфиг (содержит ключи)
+livekit/livekit.yaml
+
+# TLS-серты TURN (вытягиваются из Caddy)
+certs/
+
+# nix
+result
+result-*
+
+# прочее
+*.log
