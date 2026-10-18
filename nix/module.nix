@@ -107,11 +107,25 @@ in
 
     telegram = {
       enable = lib.mkEnableOption "Telegram-мост (tgbridge): медиа и TTS в палату";
+      botToken = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "123456:AA...";
+        description = ''
+          Токен бота прямой строкой. ПРОСТО, но НЕБЕЗОПАСНО: значение попадёт в
+          /nix/store (мир-читаемо, любой локальный юзер прочитает). Для прода
+          используй environmentFile. Задай ЛИБО botToken, ЛИБО environmentFile.
+        '';
+      };
       environmentFile = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
+        example = "/run/secrets/tg.env";
         description = ''
-          EnvironmentFile с TELEGRAM_BOT_TOKEN. Секрет вне nix store.
+          EnvironmentFile с токеном бота (безопасный способ, секрет вне store).
+          Файл должен содержать строку:
+            TELEGRAM_BOT_TOKEN=123456:AA...
+          Клади через sops-nix/agenix/Vault или вручную в /run/secrets (chmod 600).
         '';
       };
       defaultPalata = lib.mkOption {
@@ -131,6 +145,14 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+
+    assertions = [
+      {
+        assertion = !cfg.telegram.enable
+          || (cfg.telegram.botToken != null) != (cfg.telegram.environmentFile != null);
+        message = "services.meetler.telegram: задай РОВНО одно — telegram.botToken (прямо) ИЛИ telegram.environmentFile (файл).";
+      }
+    ];
 
     # --- LiveKit SFU (официальный модуль + tuned settings) ---
     services.livekit = {
@@ -259,15 +281,16 @@ in
       path = [ pkgs.ffmpeg pkgs.piper-tts ];
       serviceConfig = {
         ExecStart = "${lib.getExe tgbridge}";
-        # LIVEKIT_API_KEY/SECRET берём из того же файла, что и token-svc (одна пара);
-        # TELEGRAM_BOT_TOKEN — из telegram.environmentFile.
+        # LIVEKIT_API_KEY/SECRET берём из того же файла, что и token-svc (одна пара).
+        # TELEGRAM_BOT_TOKEN — из environmentFile ИЛИ прямой botToken (в Environment).
         EnvironmentFile =
           [ cfg.tokenEnvironmentFile ]
           ++ lib.optional (cfg.telegram.environmentFile != null) cfg.telegram.environmentFile;
         Environment = [
           "LIVEKIT_URL=ws://127.0.0.1:7880"
           "DEFAULT_PALATA=${cfg.telegram.defaultPalata}"
-        ] ++ lib.optional (cfg.telegram.piperModel != null) "PIPER_MODEL=${cfg.telegram.piperModel}"
+        ] ++ lib.optional (cfg.telegram.botToken != null) "TELEGRAM_BOT_TOKEN=${cfg.telegram.botToken}"
+          ++ lib.optional (cfg.telegram.piperModel != null) "PIPER_MODEL=${cfg.telegram.piperModel}"
           ++ lib.optional (cfg.telegram.piperModel != null) "PIPER_BIN=${pkgs.piper-tts}/bin/piper";
         DynamicUser = true;
         Restart = "on-failure";
