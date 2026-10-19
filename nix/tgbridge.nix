@@ -12,7 +12,7 @@
   };
 
   # пересчитай при изменении go.sum: nix build .#tgbridge выдаст ожидаемый хеш
-  vendorHash = "sha256-2ZqM0TYZ9Qq3mdM9XW2PUIEfCw+otv99k6zdVRFTPe0=";
+  vendorHash = "sha256-xZZ3Wn1L4ge2FtzWvRbDwCJSgH44g+2yZDQdB+vMvb8=";
 
   ldflags = [ "-s" "-w" ];
 
