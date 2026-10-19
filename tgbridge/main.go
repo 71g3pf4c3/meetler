@@ -180,13 +180,14 @@ func palataFromText(s string) string {
 }
 
 type app struct {
-	cfg   config
-	bot   *telego.Bot
-	me    string // username бота в нижнем регистре, без @
-	meID  int64  // ID бота (фильтр my_chat_member)
-	pub   *Publisher
-	tts   *TTS
-	store *palataStore
+	cfg         config
+	bot         *telego.Bot
+	me          string // username бота в нижнем регистре, без @
+	meID        int64  // ID бота (фильтр my_chat_member)
+	pub         *Publisher
+	tts         *TTS
+	store       *palataStore
+	soundsvcURL string // база token-svc для заливки в аптечку (/soundboardsave)
 }
 
 func main() {
@@ -208,8 +209,9 @@ func main() {
 		Commands: []telego.BotCommand{
 			{Command: "help", Description: "Справка: медиа и TTS в палату"},
 			{Command: "palata", Description: "Показать или задать палату: /palata 6"},
-			{Command: "tts", Description: "Озвучить текст: /tts привет палата"},
+			{Command: "tts", Description: "Озвучить текст или реплай: /tts привет"},
 			{Command: "tovoice", Description: "В реплае на медиа: проиграть его в палате"},
+			{Command: "soundboardsave", Description: "В реплае на медиа: сохранить в аптечку палаты"},
 		},
 	})
 
@@ -218,9 +220,10 @@ func main() {
 		bot:   bot,
 		me:    strings.ToLower(me.Username),
 		meID:  me.ID,
-		pub:   NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
-		tts:   NewTTS(cfg.piperBin, cfg.piperModel),
-		store: newPalataStore(),
+		pub:         NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
+		tts:         NewTTS(cfg.piperBin, cfg.piperModel),
+		store:       newPalataStore(),
+		soundsvcURL: env("SOUNDSVC_URL", "http://host.docker.internal:8080"),
 	}
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
 
@@ -281,23 +284,99 @@ func (a *app) reply(ctx context.Context, chatID int64, text string) {
 	})
 }
 
+// replyErr: единая реакция на ошибку публикации в палату. Если бота кикнули
+// (палата на кулдауне) — показываем ровно «tg bot в тюрьме» без префикса.
+// Иначе — «<prefix>: <err>».
+func (a *app) replyErr(ctx context.Context, chatID int64, prefix string, err error) {
+	if IsJailed(err) {
+		a.reply(ctx, chatID, "tg bot в тюрьме")
+		return
+	}
+	a.reply(ctx, chatID, prefix+": "+err.Error())
+}
+
 // cmdTTS: /tts <текст> — явный вызов озвучки (работает и в группах:
 // команда сама по себе адресована боту, упоминание не нужно).
+// Если аргумент пуст, но команда — РЕПЛАЙ на сообщение с текстом, озвучиваем
+// текст того сообщения (/tts в ответ на чей-то текст).
 func (a *app) cmdTTS(ctx context.Context, m *telego.Message, arg, palata string) {
+	if arg == "" && m.ReplyToMessage != nil {
+		rt := m.ReplyToMessage
+		if t := strings.TrimSpace(rt.Text); t != "" {
+			arg = t
+		} else if c := strings.TrimSpace(rt.Caption); c != "" {
+			arg = c
+		}
+	}
 	if arg == "" {
-		a.reply(ctx, m.Chat.ID, "Использование: /tts <текст> — озвучу его в палате "+palata+".")
+		a.reply(ctx, m.Chat.ID, "Использование: /tts <текст> ИЛИ ответь /tts на сообщение с текстом — озвучу его в палате "+palata+".")
 		return
 	}
 	if !a.tts.enabled() {
 		a.reply(ctx, m.Chat.ID, "TTS выключен (нет piper).")
 		return
 	}
-	if err := a.streamTTS(ctx, palata, arg); err != nil {
+	if err := a.streamTTS(ctx, palata, a.cleanText(arg)); err != nil {
 		log.Printf("streamTTS: %v", err)
-		a.reply(ctx, m.Chat.ID, "TTS ошибка: "+err.Error())
+		a.replyErr(ctx, m.Chat.ID, "TTS ошибка", err)
 		return
 	}
 	a.reply(ctx, m.Chat.ID, "✓ озвучено в палате "+palata)
+}
+
+// replyMediaFileID извлекает fileID медиа из сообщения-реплая (voice/audio/
+// video/video_note/документ-аудио-видео). Возвращает fileID, длительность,
+// isVideo, предложенное имя файла. Переиспользуется /tovoice и /soundboardsave.
+func replyMediaFileID(rt *telego.Message) (fileID string, dur int, isVideo bool, fname string) {
+	if rt == nil {
+		return "", 0, false, ""
+	}
+	switch {
+	case rt.Voice != nil:
+		return rt.Voice.FileID, rt.Voice.Duration, false, "voice.ogg"
+	case rt.Audio != nil:
+		return rt.Audio.FileID, rt.Audio.Duration, false, "audio"
+	case rt.VideoNote != nil:
+		return rt.VideoNote.FileID, rt.VideoNote.Duration, true, "note.mp4"
+	case rt.Video != nil:
+		return rt.Video.FileID, rt.Video.Duration, true, "video.mp4"
+	case rt.Document != nil:
+		mt := strings.ToLower(rt.Document.MimeType)
+		switch {
+		case strings.HasPrefix(mt, "audio/"):
+			return rt.Document.FileID, 0, false, rt.Document.FileName
+		case strings.HasPrefix(mt, "video/"):
+			return rt.Document.FileID, 0, true, rt.Document.FileName
+		}
+	}
+	return "", 0, false, ""
+}
+
+// cmdSoundboardSave: /soundboardsave в РЕПЛАЕ на сообщение с аудио/видео/
+// голосовым — скачиваем, транскодим в ogg/opus (режется до maxPlaySec) и
+// заливаем в звуковую аптечку палаты (token-svc POST /sounds). Label — подпись
+// команды (/soundboardsave моё имя) либо имя файла.
+func (a *app) cmdSoundboardSave(ctx context.Context, m *telego.Message, arg, palata string) {
+	fileID, _, _, fname := replyMediaFileID(m.ReplyToMessage)
+	if fileID == "" {
+		a.reply(ctx, m.Chat.ID,
+			"Ответь /soundboardsave на сообщение с голосовым/аудио/видео/музыкой — сохраню в аптечку палаты "+palata+".")
+		return
+	}
+	if a.soundsvcURL == "" {
+		a.reply(ctx, m.Chat.ID, "Сохранение в аптечку не настроено (нет SOUNDSVC_URL).")
+		return
+	}
+	label := strings.TrimSpace(arg)
+	if label == "" {
+		label = strings.TrimSuffix(fname, filepath.Ext(fname))
+	}
+	if err := a.saveToSoundboard(ctx, palata, fileID, label); err != nil {
+		log.Printf("soundboardsave: %v", err)
+		a.reply(ctx, m.Chat.ID, "Не удалось сохранить: "+err.Error())
+		return
+	}
+	a.reply(ctx, m.Chat.ID, "✓ сохранено в аптечку палаты "+palata+" как «"+label+"»")
 }
 
 // cmdToVoice: /tovoice в РЕПЛАЕ на сообщение с медиа (голосовое/аудио/видео/
@@ -342,7 +421,7 @@ func (a *app) cmdToVoice(ctx context.Context, m *telego.Message, palata string) 
 	}
 	if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
 		log.Printf("streamFile: %v", err)
-		a.reply(ctx, m.Chat.ID, "Не удалось проиграть: "+err.Error())
+		a.replyErr(ctx, m.Chat.ID, "Не удалось проиграть", err)
 		return
 	}
 	a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
@@ -414,6 +493,9 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 			case "tovoice":
 				a.cmdToVoice(ctx, m, palata)
 				return
+			case "soundboardsave":
+				a.cmdSoundboardSave(ctx, m, arg, palata)
+				return
 			}
 			// неизвестная команда: в личке подскажем, в группе молчим (шумно)
 			if !isGroup {
@@ -455,7 +537,7 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 		isVideo := m.VideoNote != nil || m.Video != nil
 		if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
 			log.Printf("streamFile: %v", err)
-			a.reply(ctx, m.Chat.ID, "Не удалось проиграть: "+err.Error())
+			a.replyErr(ctx, m.Chat.ID, "Не удалось проиграть", err)
 			return
 		}
 		a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
@@ -470,7 +552,7 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 			a.reply(ctx, m.Chat.ID, "Качаю первые "+fmt.Sprint(maxPlaySec)+"с с YouTube в палату "+palata+"…")
 			if err := a.streamYouTube(ctx, palata, yt); err != nil {
 				log.Printf("streamYouTube: %v", err)
-				a.reply(ctx, m.Chat.ID, "YouTube не удался: "+err.Error())
+				a.replyErr(ctx, m.Chat.ID, "YouTube не удался", err)
 				return
 			}
 			a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
@@ -490,7 +572,7 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 			spoken := a.cleanText(text)
 			if err := a.streamTTS(ctx, palata, spoken); err != nil {
 				log.Printf("streamTTS: %v", err)
-				a.reply(ctx, m.Chat.ID, "TTS ошибка: "+err.Error())
+				a.replyErr(ctx, m.Chat.ID, "TTS ошибка", err)
 				return
 			}
 			a.reply(ctx, m.Chat.ID, "✓ озвучено в палате "+palata)

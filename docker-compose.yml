@@ -64,6 +64,11 @@ services:
     networks: [internal]
     expose:
       - "8080"
+    # публикуем ТОЛЬКО на loopback хоста: tgbridge (host-network) заливает в
+    # аптечку через /soundboardsave по 127.0.0.1:8080. Наружу не светится —
+    # публичный доступ идёт через Caddy. Caddy видит token-svc по internal-сети.
+    ports:
+      - "127.0.0.1:8080:8080"
 
   caddy:
     image: caddy:2-alpine
