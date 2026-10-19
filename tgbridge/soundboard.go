@@ -69,6 +69,13 @@ func (a *app) uploadSound(ctx context.Context, palata, oggPath, label string) er
 		return err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	cookies, err := backendCookies(c, a.soundsvcURL, os.Getenv("APP_PASSWORD"))
+	if err != nil {
+		return err
+	}
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

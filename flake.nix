@@ -38,7 +38,6 @@
       # NixOS-модуль — не зависит от system
       nixosModules.default = import ./nix/module.nix {
         inherit self;
-        mkWeb = mkWeb;
       };
       nixosModules.meetler = self.nixosModules.default;
     };

@@ -215,65 +215,82 @@ docker compose --profile telegram up -d --build
 TTS: смонтируй piper .onnx модель и задай `PIPER_MODEL=/models/ru.onnx` (без неё
 озвучка текста выключена, медиа работает).
 
-NixOS:
+NixOS: задай `services.meetler.telegram.piperModel` (полный путь к `.onnx`;
+рядом должен лежать `.onnx.json`). Без модели TTS выключен.
+
+## Деплой через NixOS
+
 ```nix
-services.meetler.telegram = {
+# flake.nix
+inputs.meetler.url = "github:71g3pf4c3/hit-meet";
+```
+
+Добавь `meetler.nixosModules.default` в `modules` и настрой:
+
+```nix
+services.meetler = {
   enable = true;
-  environmentFile = "/run/secrets/tg.env";   # TELEGRAM_BOT_TOKEN=...
-  # Голос piper: авто-скачивание русской модели (dmitri | irina | ruslan)
-  piperVoice = "dmitri";
-  # ...или своя модель (взаимоисключимо с piperVoice):
-  # piperModel = "/var/lib/piper/ru.onnx";   # null = TTS off
+  domain = "meet.example.com";
+  sslCertificate = "/var/lib/acme/example.com/fullchain.pem";
+  sslCertificateKey = "/var/lib/acme/example.com/key.pem";
+  livekitKeyFile = "/run/secrets/livekit-keys.yaml";
+  environmentFiles = [
+    "/run/secrets/meetler-token.env"
+    "/run/secrets/meetler-app.env"
+  ];
+  telegram = {
+    enable = true;
+    environmentFile = "/run/secrets/telegram.env";
+    piperModel = "/var/lib/piper/glados.onnx";
+  };
 };
 ```
 
-## Деплой через NixOS (альтернатива docker-compose)
+- `livekitKeyFile`: `<key>: <secret>`; сгенерировать через `livekit-server generate-keys`.
+- `environmentFiles`: `LIVEKIT_API_KEY` и `LIVEKIT_API_SECRET` из той же пары,
+  необязательные `APP_PASSWORD`, `TOKEN_TTL`, `ROOM_MAX_PARTICIPANTS`, `DEFAULT_PALATA`.
+- `telegram.environmentFile`: `TELEGRAM_BOT_TOKEN`.
+- Сертификат и ключ — **полные пути с любыми именами файлов**. Их читают nginx
+  и TURN, доступ нужен группе `nginx`. Выпуск и обновление настрой отдельно
+  через `security.acme` или свой ACME-клиент; после обновления перезагрузи nginx
+  и перезапусти LiveKit. Для NixOS ACME это `reloadServices = [ "nginx.service" "livekit.service" ];`.
 
-Flake экспортирует `nixosModules.default`, который оборачивает официальный
-`services.livekit` с tuned-настройками + token-svc (systemd, DynamicUser) +
-nginx + ACME + firewall.
+Секреты передавай через agenix, sops-nix или файлы вне Nix store.
+Модуль сам настраивает nginx, WebSocket proxy, комнаты и Telegram HTTP в обе
+стороны. В Telegram доступны ffmpeg и yt-dlp, а при указанной модели — Piper.
+
+Порты backend и Telegram HTTP: `services.meetler.port` (8080) и
+`services.meetler.telegram.port` (8090). SFU настраивается стандартными опциями
+`services.livekit.settings`; URL и firewall обновляются автоматически:
 
 ```nix
-# flake.nix твоей системы (репозиторий на GitHub пока называется hit-meet)
-{
-  inputs.meetler.url = "github:71g3pf4c3/hit-meet";
-  outputs = { nixpkgs, meetler, ... }: {
-    nixosConfigurations.meet = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        meetler.nixosModules.default
-        {
-          services.meetler = {
-            enable = true;
-            domain = "meet.example.com";
-            acmeEmail = "admin@example.com";
-            livekitKeyFile = "/run/secrets/livekit-keys.yaml";
-            tokenEnvironmentFile = "/run/secrets/token.env";
-            nodeIp = "203.0.113.10";         # floating IP для облака/NAT
-          };
-        }
-      ];
-    };
+services.meetler.port = 8085;
+services.livekit.settings = {
+  port = 7890;
+  rtc = {
+    node_ip = "203.0.113.10";
+    tcp_port = 7891;
+    port_range_start = 41000;
+    port_range_end = 42000;
   };
-}
+  turn = {
+    tls_port = 5351;
+    relay_range_end = 39999;
+  };
+};
 ```
 
-Секреты (вне nix store):
-- `livekitKeyFile` — формат `<key>: <secret>` (`livekit-server generate-keys`).
-- `tokenEnvironmentFile` — `LIVEKIT_API_KEY=...` и `LIVEKIT_API_SECRET=...`,
-  та же пара key/secret. Клади через sops-nix / agenix / Vault, не в git.
+Отключить TURN: `services.livekit.settings.turn.enabled = false;`.
+`services.meetler.openFirewall = false;` оставляет firewall под твоим управлением.
+Backend, signaling API и Telegram HTTP по умолчанию слушают loopback.
 
-nginx настраивается с `proxyWebsockets` для wss-сигналинга и 24h read/send timeout
-на `/rtc`. ACME централизован в `security.acme`, сертификат доступен nginx
-и встроенному TURN LiveKit через группу `nginx`.
+Данные: `/var/lib/meetler/rooms`. Для сохранения прежнего пути при миграции
+задай `services.meetler.stateDirectory` (например, `"meetler-token"`). Права
+обеспечивает systemd. `/healthz` проверяет backend без пароля.
 
-На первом деплое (серта ещё нет) можно `services.meetler.enableTurn = false`,
-после выписки серта — снять флаг и пересобрать.
-
-Dev-shell: `nix develop` (go, gopls, livekit, livekit-cli, nginx).
-
-Примечание: nixpkgs тянет livekit из своего пина (может быть чуть старее docker-пина
-v1.13.10 — tuned-поля конфига идентичны, API совместим).
+Nix-пакеты используют `buildGoLatestModule` и кеш полных Go-модулей. При
+изменении `go.mod` или `go.sum` пересчитай `vendorHash` в `nix/token-svc.nix`
+или `nix/tgbridge.nix`.
 
 ## Лимиты
 
