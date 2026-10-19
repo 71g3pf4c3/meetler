@@ -234,7 +234,8 @@
   }
 
   function scheduleRoach() {
-    setTimeout(spawnRoach, rand(30000, 90000)); // случайный промежуток 30–90с
+    // таракан — редкий гость: ~раз в 2 часа (±30 мин), как муха
+    setTimeout(spawnRoach, rand(90 * 60000, 150 * 60000));
   }
 
   window.addEventListener('resize', () => {
@@ -251,5 +252,5 @@
 
   // первый выход мухи — тоже через ~2 часа (не скоро после загрузки)
   setTimeout(spawnFly, rand(90 * 60000, 150 * 60000));
-  setTimeout(spawnRoach, rand(8000, 20000));
+  setTimeout(spawnRoach, rand(90 * 60000, 150 * 60000));
 })();

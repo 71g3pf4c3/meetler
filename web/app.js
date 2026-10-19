@@ -137,39 +137,50 @@ function ensureTile(participant) {
   el.appendChild(ph);
   el.appendChild(label);
 
+  // tgbridge — служебный участник (telegram-мост / youtube-трансляция): ему
+  // НЕ нужны индивидуальная громкость и кик — это не живой пациент. Видео
+  // от него должно занимать весь тайл без мешающих контролов поверх.
+  const isBridge = participant.identity === 'tgbridge';
+
   // индивидуальная громкость ЭТОГО участника (только у себя).
   // max=300: БУСТ до 300% — чужой тайл можно "забустить" громче оригинала.
   // >100% невозможно через <audio>.volume (капится [0,1]) — идём через
   // WebAudio GainNode (boostTileVolume): audio-элемент глушим, звук гоним
   // через gain. ≤100% работает по-старому (дёшево, без WebAudio).
-  const vol = document.createElement('input');
-  vol.type = 'range';
-  vol.min = '0';
-  vol.max = '300';
-  vol.value = '100';
-  vol.className = 'vol';
-  vol.title = 'громкость участника (у себя), до 300% — буст';
-  el.appendChild(vol);
+  let vol = null;
+  if (!isBridge) {
+    vol = document.createElement('input');
+    vol.type = 'range';
+    vol.min = '0';
+    vol.max = '300';
+    vol.value = '100';
+    vol.className = 'vol';
+    vol.title = 'громкость участника (у себя), до 300% — буст';
+    el.appendChild(vol);
+  }
 
   // кик — ПО ГОЛОСАМ: нужно VOTE_THRESHOLD разных пациентов. Цвет крестика
   // отражает прогресс. Когда порог взят — сервер выписывает, а мы шлём всем
   // «ломаемся» для minecraft-анимации.
-  const kick = document.createElement('button');
-  kick.className = 'kick';
-  kick.textContent = '✕';
-  kick.title = 'Голос за выписку (нужно 3)';
-  kick.dataset.vkey = 'kick:' + participant.identity; // раскраска по опросу
-  kick.onclick = async () => {
-    if (!room) return;
-    const r = await castVote(room.name, 'kick', participant.identity);
-    if (!r) { $('err').textContent = 'Голос не засчитан'; return; }
-    applyVoteColor(kick, r.done ? 3 : r.count);
-    if (r.done) {
-      breakTile(participant.sid);           // анимация у себя
-      broadcastBreak(participant.sid);       // и у всех остальных
-    }
-  };
-  el.appendChild(kick);
+  let kick = null;
+  if (!isBridge) {
+    kick = document.createElement('button');
+    kick.className = 'kick';
+    kick.textContent = '✕';
+    kick.title = 'Голос за выписку (нужно 3)';
+    kick.dataset.vkey = 'kick:' + participant.identity; // раскраска по опросу
+    kick.onclick = async () => {
+      if (!room) return;
+      const r = await castVote(room.name, 'kick', participant.identity);
+      if (!r) { $('err').textContent = 'Голос не засчитан'; return; }
+      applyVoteColor(kick, r.done ? 3 : r.count);
+      if (r.done) {
+        breakTile(participant.sid);           // анимация у себя
+        broadcastBreak(participant.sid);       // и у всех остальных
+      }
+    };
+    el.appendChild(kick);
+  }
 
   addMaxControls(el); // кнопка разворота + клик по тайлу = на всё окно
 
@@ -180,7 +191,7 @@ function ensureTile(participant) {
     audioEl: null, audioTrack: null, audioVol: 1,
     boostCtx: null, boostSrc: null, boostGain: null, // WebAudio граф для >100%
   };
-  vol.addEventListener('input', () => {
+  if (vol) vol.addEventListener('input', () => {
     t.audioVol = vol.value / 100; // 0..3
     applyTileVolume(t);
   });

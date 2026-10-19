@@ -188,6 +188,22 @@ type app struct {
 	tts         *TTS
 	store       *palataStore
 	soundsvcURL string // база token-svc для заливки в аптечку (/soundboardsave)
+	// mediaSem ограничивает одновременные публикации медиа в палаты (/tovoice,
+	// пересланное медиа): не более cap(mediaSem) разом. Защита от спама.
+	mediaSem chan struct{}
+}
+
+const maxConcurrentMedia = 3 // не более 3 медиа-публикаций одновременно
+
+// acquireMedia неблокирующе занимает слот очереди медиа. ok=false → очередь
+// занята (уже maxConcurrentMedia в работе). release() освобождает слот.
+func (a *app) acquireMedia() (release func(), ok bool) {
+	select {
+	case a.mediaSem <- struct{}{}:
+		return func() { <-a.mediaSem }, true
+	default:
+		return func() {}, false
+	}
 }
 
 func main() {
@@ -224,6 +240,7 @@ func main() {
 		tts:         NewTTS(cfg.piperBin, cfg.piperModel),
 		store:       newPalataStore(),
 		soundsvcURL: env("SOUNDSVC_URL", "http://host.docker.internal:8080"),
+		mediaSem:    make(chan struct{}, maxConcurrentMedia),
 	}
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
 
@@ -589,7 +606,17 @@ func (a *app) cleanText(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// errQueueFull — очередь медиа занята (уже maxConcurrentMedia публикуется).
+var errQueueFull = fmt.Errorf("очередь занята: уже %d медиа играет, попробуй через пару секунд", maxConcurrentMedia)
+
 func (a *app) streamFile(ctx context.Context, palata, fileID string, isVideo bool) error {
+	// очередь: не более maxConcurrentMedia публикаций разом (/tovoice, медиа)
+	release, ok := a.acquireMedia()
+	if !ok {
+		return errQueueFull
+	}
+	defer release()
+
 	dir, cleanup, err := tmpDir()
 	if err != nil {
 		return err
