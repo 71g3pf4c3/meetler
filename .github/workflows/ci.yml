@@ -68,7 +68,7 @@ jobs:
         working-directory: e2e
         run: npx playwright test
 
-      - name: artifact: report
+      - name: 'artifact: report'
         if: failure()
         uses: actions/upload-artifact@v4
         with:
