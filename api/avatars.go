@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -89,7 +90,11 @@ var avatarExt = map[string]string{
 
 func avatarRandName() string {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand на практике не падает; если упал — фатально
+		// (иначе коллизия имени → перезапись чужого аватара).
+		log.Fatalf("crypto/rand failed: %v", err)
+	}
 	return hex.EncodeToString(b)
 }
 

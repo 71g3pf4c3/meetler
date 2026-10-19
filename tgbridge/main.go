@@ -368,7 +368,13 @@ func (a *app) cmdSoundboardSave(ctx context.Context, m *telego.Message, arg, pal
 	}
 	label := strings.TrimSpace(arg)
 	if label == "" {
-		label = strings.TrimSuffix(fname, filepath.Ext(fname))
+		// авто-label из имени файла + таймстемп: Telegram часто отдаёт
+		// безликие имена (video.mp4 → "video"), кнопки аптечки неразличимы.
+		base := strings.TrimSuffix(fname, filepath.Ext(fname))
+		if base == "" {
+			base = "save"
+		}
+		label = base + " " + time.Now().Format("02.01 15:04")
 	}
 	if err := a.saveToSoundboard(ctx, palata, fileID, label); err != nil {
 		log.Printf("soundboardsave: %v", err)
@@ -624,6 +630,13 @@ func (a *app) streamFile(ctx context.Context, palata, fileID string, isVideo boo
 }
 
 func (a *app) streamTTS(ctx context.Context, palata, text string) error {
+	// очередь: TTS тоже под лимитом (иначе спам /tts → N piper-процессов + коннектов)
+	release, ok := a.acquireMedia()
+	if !ok {
+		return errQueueFull
+	}
+	defer release()
+
 	dir, cleanup, err := tmpDir()
 	if err != nil {
 		return err
@@ -643,7 +656,10 @@ func (a *app) download(ctx context.Context, fileID, dir string) (string, error) 
 		return "", fmt.Errorf("getFile: %w", err)
 	}
 	url := a.bot.FileDownloadURL(f.FilePath)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("download req: %w", err)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)

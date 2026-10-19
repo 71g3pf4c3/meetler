@@ -97,11 +97,20 @@ func (a *app) handleTGVoice(w http.ResponseWriter, r *http.Request) {
 
 	sent := 0
 	for _, chatID := range chats {
-		if _, err := a.bot.SendVoice(ctx, &telego.SendVoiceParams{
+		// telego читает поток на каждый вызов — нужен свой reader на чат.
+		// При сбое open не паникуем (раньше mustOpen→nil→panic рвал HTTP-сервер).
+		fh, err := os.Open(ogg)
+		if err != nil {
+			log.Printf("open ogg room=%s: %v", room, err)
+			continue
+		}
+		_, err = a.bot.SendVoice(ctx, &telego.SendVoiceParams{
 			ChatID:  tu.ID(chatID),
-			Voice:   tu.File(mustOpen(ogg)),
+			Voice:   tu.File(fh),
 			Caption: "🎙 последние 15с из палаты " + room,
-		}); err != nil {
+		})
+		_ = fh.Close()
+		if err != nil {
 			log.Printf("SendVoice chat=%d room=%s: %v", chatID, room, err)
 			continue
 		}
@@ -112,14 +121,4 @@ func (a *app) handleTGVoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// mustOpen открывает файл для telego (повторная отправка в несколько чатов
-// требует отдельного читателя на каждый вызов — telego читает поток).
-func mustOpen(path string) *os.File {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	return f
 }

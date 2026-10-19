@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -78,7 +79,11 @@ func sanitizeLabel(s string) string {
 
 func randName() string {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand на практике не падает; если упал — фатально
+		// (иначе коллизия id → перезапись чужого звука).
+		log.Fatalf("crypto/rand failed: %v", err)
+	}
 	return hex.EncodeToString(b)
 }
 

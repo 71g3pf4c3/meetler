@@ -91,6 +91,13 @@ func downloadYouTube(ctx context.Context, link, dir string) (string, error) {
 
 // streamYouTube: ссылка → скачать → toVideo → PublishVideo в палату.
 func (a *app) streamYouTube(ctx context.Context, palata, link string) error {
+	// очередь: YouTube тоже под лимитом (yt-dlp + ffmpeg тяжёлые, не плодим параллель)
+	release, ok := a.acquireMedia()
+	if !ok {
+		return errQueueFull
+	}
+	defer release()
+
 	dir, cleanup, err := tmpDir()
 	if err != nil {
 		return err
