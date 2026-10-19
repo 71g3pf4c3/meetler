@@ -3,7 +3,7 @@
 //
 // Палата определяется (по убыванию приоритета):
 //  1. явно в сообщении/подписи:  "#6" или "/palata 6"
-//  2. сохранённая для этого юзера (командой /palata 6)
+//  2. сохранённая для ЧАТА (командой /palata 6; в группе — общая на всех)
 //  3. дефолтная (DEFAULT_PALATA)
 //
 // Триггеры:
@@ -88,17 +88,17 @@ type palataStore struct {
 }
 
 func newPalataStore() *palataStore { return &palataStore{m: map[int64]string{}} }
-func (s *palataStore) get(uid int64, def string) string {
+func (s *palataStore) get(key int64, def string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if v, ok := s.m[uid]; ok {
+	if v, ok := s.m[key]; ok {
 		return v
 	}
 	return def
 }
-func (s *palataStore) set(uid int64, v string) {
+func (s *palataStore) set(key int64, v string) {
 	s.mu.Lock()
-	s.m[uid] = v
+	s.m[key] = v
 	s.mu.Unlock()
 }
 
@@ -134,8 +134,8 @@ func (a *app) helpText() string {
 		"  проиграю это медиа в палате.\n" +
 		"• /tts <текст> → озвучу текст (piper TTS).\n" +
 		"• Текст с @упоминанием меня ИЛИ (в личке) с #палатой → тоже озвучу.\n" +
-		"• Палата: #6 или /palata 6 в сообщении/подписи; запомнить свою: /palata 6;\n" +
-		"  посмотреть текущую: /palata; по умолчанию: " + a.cfg.defPalata + ".\n\n" +
+		"• Палата: #6 или /palata 6 в сообщении/подписи; задать для чата: /palata 6\n" +
+		"  (в группе — общая на всех); посмотреть текущую: /palata; по умолчанию: " + a.cfg.defPalata + ".\n\n" +
 		"В группах я реагирую только на адресованные мне сообщения: @упоминание,\n" +
 		"реплай на моё сообщение или #палата в подписи к медиа (команды /tts и\n" +
 		"/tovoice работают всегда). Чтобы я вообще видел медиа, я должен быть\n" +
@@ -328,10 +328,9 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 		}
 	}()
 
-	uid := int64(0)
-	if m.From != nil {
-		uid = m.From.ID
-	}
+	// палата запоминается НА ЧАТ, а не на юзера: в группе — одна общая палата
+	// для всех её участников; в личке chat.ID == личный чат (персонально).
+	pkey := m.Chat.ID
 	// anti-loop в группах: чужие боты не триггерят медиа/TTS. Исключение —
 	// GroupAnonymousBot: через него пишут анонимные админы группы.
 	if m.From != nil && m.From.IsBot && m.From.ID != groupAnonymousBotID {
@@ -353,7 +352,7 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 		palata = palataFromText(text)
 	}
 	if palata == "" {
-		palata = a.store.get(uid, a.cfg.defPalata)
+		palata = a.store.get(pkey, a.cfg.defPalata)
 	}
 	if !palataRe.MatchString(palata) {
 		a.reply(ctx, m.Chat.ID, "Неверный номер палаты.")
@@ -379,7 +378,7 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 					a.reply(ctx, m.Chat.ID, "Неверный номер палаты: только a-z, 0-9, -, _ (до 64 символов).")
 					return
 				}
-				a.store.set(uid, arg)
+				a.store.set(pkey, arg)
 				a.reply(ctx, m.Chat.ID, "Палата запомнена: "+arg)
 				return
 			case "tts":

@@ -402,9 +402,12 @@ function wireRoomEvents(r) {
   });
   r.on(RoomEvent.ParticipantConnected, (p) => {
     ensureTile(p);
-    playWelcome(); // звук приветствия: кто-то вошёл
+    recomputeAvatars(); // роутинг без повторов: пересчитать назначение у всех
+    // звук приветствия: кто-то вошёл. НЕ играем, когда заходит Telegram-мост
+    // (tgbridge) — это служебный участник, а не живой пациент.
+    if (p.identity !== 'tgbridge') playWelcome();
   });
-  r.on(RoomEvent.ParticipantDisconnected, (p) => removeTile(p));
+  r.on(RoomEvent.ParticipantDisconnected, (p) => { removeTile(p); recomputeAvatars(); });
   r.on(RoomEvent.ParticipantNameChanged, (_name, p) => updateTileLabel(p));
   // данные от других клиентов: сейчас — только «ломаемся» (minecraft-анимация
   // кикнутого тайла у всех зрителей синхронно)
@@ -1012,8 +1015,8 @@ async function refreshAvatars() {
     const avatars = (await res.json()) || [];
     avatarList = avatars;
     if (cnt) cnt.textContent = String(avatars.length);
-    // перекрасить уже существующие тайлы (вдруг пул обновился)
-    document.querySelectorAll('.tile .ph').forEach(applyAvatarToPh);
+    // пул изменился — пересчитать назначение без повторов и перекрасить тайлы
+    recomputeAvatars();
     if (box) {
       box.innerHTML = '';
       if (!avatars.length) box.textContent = 'портретов нет — пациенты ходят со стандартными';
@@ -1026,6 +1029,29 @@ async function refreshAvatars() {
         img.alt = a.id;
         img.loading = 'lazy';
         th.appendChild(img);
+        // лайк: чем больше лайков — тем реже портрет выдаётся. Тоггл по клику.
+        const like = document.createElement('button');
+        like.className = 'like';
+        like.textContent = '♥ ' + (a.likes || 0);
+        like.title = 'Лайк (чем больше — тем реже выпадает)';
+        like.onclick = async (e) => {
+          e.stopPropagation();
+          try {
+            const res = await fetch(roomApi(rm) + '/avatars/' + encodeURIComponent(a.id) + '/like', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ voter: clientId() }),
+            });
+            if (!res.ok) throw new Error((await res.text()) || res.status);
+            const j = await res.json();
+            like.textContent = '♥ ' + j.likes;
+            like.classList.toggle('liked', j.liked);
+            await refreshAvatars(); // пересчитать веса/раритет (пул изменился)
+          } catch (err) {
+            const ae = $('avatarErr'); if (ae) ae.textContent = 'Лайк не удался: ' + (err.message || err);
+          }
+        };
+        th.appendChild(like);
         // удаление портрета — ПО ГОЛОСАМ (нужно 3), цвет крестика = прогресс
         const del = document.createElement('button');
         del.textContent = '✕';
@@ -1061,12 +1087,14 @@ const DEFAULT_AVATARS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `/dav/${n}.png`);
 //   - загруженные — реже, и КАЖДАЯ НОВАЯ ещё реже (вес убывает по порядку).
 // Чем больше портретов в палате — тем ниже шанс конкретного (total растёт).
 const DEFAULT_WEIGHT = 3;
-function uploadedWeight(i) { return DEFAULT_WEIGHT / (i + 2); } // 1.0, 0.75, 0.6, ...
+// вес загруженного портрета: убывает по порядку (каждая новая реже) И по
+// лайкам (чем больше лайков — тем реже выдаётся). likes≥0.
+function uploadedWeight(i, likes) { return DEFAULT_WEIGHT / (i + 2) / (1 + (likes || 0)); }
 
 // buildAvatarPool: [{url, weight, rarity}] — дефолты + загруженные (по порядку id).
 function buildAvatarPool() {
   const pool = DEFAULT_AVATARS.map((url) => ({ url, weight: DEFAULT_WEIGHT }));
-  avatarList.forEach((a, i) => pool.push({ url: a.url, weight: uploadedWeight(i), id: a.id }));
+  avatarList.forEach((a, i) => pool.push({ url: a.url, weight: uploadedWeight(i, a.likes), id: a.id }));
   const total = pool.reduce((s, e) => s + e.weight, 0);
   for (const e of pool) e.rarity = rarityTier(e.weight / total);
   return { pool, total };
@@ -1081,16 +1109,62 @@ function rarityTier(p) {
   return 4;                 // legendary (самые редкие)
 }
 
-function avatarUrlFor(sid) {
-  const { pool, total } = buildAvatarPool();
-  if (!pool.length) return null;
-  // детерминированный взвешенный выбор: доля хеша × суммарный вес
+// --- БЕЗ ПОВТОРОВ: каждому участнику — уникальная аватарка, пока их хватает.
+// Повтор начинается только когда юзеров БОЛЬШЕ, чем аватарок в пуле.
+// Назначение — чистая функция от (отсортированный список sid, пул): все
+// зрители считают одинаково, без сигналинга. Дефолты имеют наибольший вес →
+// выше шанс, что их займут (в т.ч. первыми).
+let avatarAssign = new Map(); // sid -> url (кэш текущего назначения)
+
+function allSids() {
+  const s = [];
+  if (room && room.localParticipant) s.push(room.localParticipant.sid);
+  if (room && room.remoteParticipants) room.remoteParticipants.forEach((p) => s.push(p.sid));
+  return s;
+}
+
+// взвешенный выбор индекса среди arr по доле хеша sid
+function weightedPickIndex(arr, sid) {
+  const total = arr.reduce((s, e) => s + e.weight, 0);
   let x = (strHash(sid) % 100000) / 100000 * total;
-  for (const e of pool) {
-    x -= e.weight;
-    if (x < 0) return e.url;
+  for (let i = 0; i < arr.length; i++) {
+    x -= arr[i].weight;
+    if (x < 0) return i;
   }
-  return pool[pool.length - 1].url;
+  return arr.length - 1;
+}
+
+// assignAvatars: детерминированное назначение без повторов (пока пул не исчерпан).
+function assignAvatars() {
+  const map = new Map();
+  const { pool } = buildAvatarPool();
+  if (!pool.length) return map;
+  // порядок обработки — по хешу sid (детерминированно, не зависит от порядка входа)
+  const order = allSids().sort((a, b) => (strHash(a) - strHash(b)) || (a < b ? -1 : 1));
+  let remaining = pool.slice();
+  for (const sid of order) {
+    if (!remaining.length) remaining = pool.slice(); // пул кончился → новый круг (юзеров > аватарок)
+    const idx = weightedPickIndex(remaining, sid);
+    map.set(sid, remaining[idx].url);
+    remaining.splice(idx, 1);
+  }
+  return map;
+}
+
+// пересчитать назначение и перекрасить все тайлы (на вход/выход/смену пула)
+function recomputeAvatars() {
+  avatarAssign = assignAvatars();
+  document.querySelectorAll('.tile .ph').forEach(applyAvatarToPh);
+}
+
+function avatarUrlFor(sid) {
+  if (avatarAssign.has(sid)) return avatarAssign.get(sid);
+  // кэш не содержит sid (тайл создаётся до пересчёта) — посчитаем на лету
+  avatarAssign = assignAvatars();
+  if (avatarAssign.has(sid)) return avatarAssign.get(sid);
+  // sid вне ростера (напр. предпросмотр) — одиночный взвешенный выбор
+  const { pool } = buildAvatarPool();
+  return pool.length ? pool[weightedPickIndex(pool, sid)].url : null;
 }
 
 // rarityForId: тир раритетности загруженного портрета (для палитры в галерее)
@@ -1243,6 +1317,66 @@ async function submitGate() {
   } catch (_) { showGate(); }
   $('gateBtn').onclick = submitGate;
   $('gatePass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitGate(); });
+})();
+
+// --- облако диагнозов МКБ-10 (класс V: психические и поведенческие, F00-F99) ---
+// Ссылка ведёт на статью русской Википедии по названию диагноза (надёжно
+// существует). Код — для антуража палаты №6; размер тега — для вида облака.
+const ICD10_F = [
+  ['F00', 'Деменция при болезни Альцгеймера', 'Болезнь_Альцгеймера'],
+  ['F06.0', 'Органический галлюциноз', 'Галлюциноз'],
+  ['F10', 'Алкогольная зависимость', 'Алкоголизм'],
+  ['F10.2', 'Алкогольный делирий', 'Белая_горячка'],
+  ['F11', 'Опиоидная зависимость', 'Опиоидная_зависимость'],
+  ['F12', 'Зависимость от каннабиноидов', 'Наркомания'],
+  ['F20', 'Шизофрения', 'Шизофрения'],
+  ['F20.0', 'Параноидная шизофрения', 'Параноидная_шизофрения'],
+  ['F21', 'Шизотипическое расстройство', 'Шизотипическое_расстройство'],
+  ['F22', 'Бредовое расстройство', 'Бредовое_расстройство'],
+  ['F23', 'Острый психоз', 'Психоз'],
+  ['F25', 'Шизоаффективное расстройство', 'Шизоаффективное_расстройство'],
+  ['F30', 'Маниакальный эпизод', 'Мания'],
+  ['F31', 'Биполярное расстройство', 'Биполярное_аффективное_расстройство'],
+  ['F32', 'Депрессивный эпизод', 'Клиническая_депрессия'],
+  ['F33', 'Рекуррентная депрессия', 'Клиническая_депрессия'],
+  ['F40', 'Фобические расстройства', 'Фобия'],
+  ['F40.1', 'Социофобия', 'Социофобия'],
+  ['F41.0', 'Паническое расстройство', 'Паническое_расстройство'],
+  ['F41.1', 'Генерализованная тревога', 'Генерализованное_тревожное_расстройство'],
+  ['F42', 'Обсессивно-компульсивное', 'Обсессивно-компульсивное_расстройство'],
+  ['F43.1', 'ПТСР', 'Посттравматическое_стрессовое_расстройство'],
+  ['F44', 'Диссоциативное расстройство', 'Диссоциативное_расстройство'],
+  ['F48.0', 'Неврастения', 'Неврастения'],
+  ['F50.0', 'Нервная анорексия', 'Нервная_анорексия'],
+  ['F50.2', 'Нервная булимия', 'Булимия'],
+  ['F60.0', 'Параноидное расстройство личности', 'Параноидное_расстройство_личности'],
+  ['F60.2', 'Диссоциальное расстройство', 'Диссоциальное_расстройство_личности'],
+  ['F60.3', 'Пограничное расстройство', 'Пограничное_расстройство_личности'],
+  ['F60.7', 'Зависимое расстройство личности', 'Зависимое_расстройство_личности'],
+  ['F63.0', 'Патологическая склонность к азартным играм', 'Лудомания'],
+  ['F70', 'Умственная отсталость', 'Умственная_отсталость'],
+  ['F84.0', 'Детский аутизм', 'Ранний_детский_аутизм'],
+  ['F90', 'СДВГ', 'Синдром_дефицита_внимания_и_гиперактивности'],
+  ['F95', 'Тики', 'Синдром_Туретта'],
+];
+
+(function initTagCloud() {
+  const box = $('tagCloud');
+  if (!box) return;
+  const sizes = [2, 4, 1, 3, 5, 2, 3, 1, 4, 2, 3, 5, 1, 2, 4]; // паттерн кеглей
+  ICD10_F.forEach(([code, label, wiki], i) => {
+    const a = document.createElement('a');
+    a.href = 'https://ru.wikipedia.org/wiki/' + encodeURIComponent(wiki);
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.className = 's' + sizes[i % sizes.length];
+    a.title = code + ' — ' + label;
+    const c = document.createElement('span');
+    c.className = 'code';
+    c.textContent = code;
+    a.append(c, document.createTextNode(' ' + label));
+    box.appendChild(a);
+  });
 })();
 
 // Esc — свернуть развёрнутый на всё окно тайл

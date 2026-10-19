@@ -32,8 +32,9 @@ type avatarStore struct {
 }
 
 type avatarMeta struct {
-	ID  string `json:"id"`
-	URL string `json:"url"` // /api/rooms/<room>/avatars/<id>
+	ID    string `json:"id"`
+	URL   string `json:"url"`   // /api/rooms/<room>/avatars/<id>
+	Likes int    `json:"likes"` // число лайков (чем больше — тем реже выдаётся)
 }
 
 func newAvatarStore(root string) *avatarStore {
@@ -49,6 +50,36 @@ func (as *avatarStore) dir(room string) string {
 
 func avatarURL(room, id string) string {
 	return "/api/rooms/" + room + "/" + avatarsSub + "/" + id
+}
+
+// Лайки портрета хранятся рядом: <dir>/<id>.likes — по одному voter-cid на
+// строку (дедуп на браузер). Чем больше лайков — тем реже портрет выдаётся
+// (вес в раздаче клиент считает по этому числу).
+func (as *avatarStore) likesPath(room, id string) string {
+	return filepath.Join(as.dir(room), id+".likes")
+}
+
+func (as *avatarStore) readLikers(room, id string) map[string]bool {
+	set := map[string]bool{}
+	b, err := os.ReadFile(as.likesPath(room, id))
+	if err != nil {
+		return set
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if v := strings.TrimSpace(line); v != "" {
+			set[v] = true
+		}
+	}
+	return set
+}
+
+func (as *avatarStore) writeLikers(room, id string, set map[string]bool) error {
+	var sb strings.Builder
+	for v := range set {
+		sb.WriteString(v)
+		sb.WriteByte('\n')
+	}
+	return os.WriteFile(as.likesPath(room, id), []byte(sb.String()), 0o644)
 }
 
 // разрешённые расширения -> content-type
@@ -116,7 +147,7 @@ func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request, room string)
 		if _, ok := avatarExt[strings.ToLower(filepath.Ext(name))]; !ok {
 			continue
 		}
-		out = append(out, avatarMeta{ID: name, URL: avatarURL(room, name)})
+		out = append(out, avatarMeta{ID: name, URL: avatarURL(room, name), Likes: len(as.readLikers(room, name))})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	w.Header().Set("Content-Type", "application/json")
@@ -235,6 +266,7 @@ func (as *avatarStore) remove(w http.ResponseWriter, _ *http.Request, room, id s
 		http.Error(w, "remove", http.StatusInternalServerError)
 		return
 	}
+	_ = os.Remove(as.likesPath(room, id)) // лайки следом
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -253,10 +285,57 @@ func (as *avatarStore) delete(room, id string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	_ = os.Remove(as.likesPath(room, id)) // лайки следом
 	return nil
 }
 
-// dispatch роутит /api/rooms/<room>/avatars[/<id>] по методу.
+// POST /api/rooms/<room>/avatars/<id>/like {voter} -> переключить лайк.
+// Возвращает {likes, liked}. Дедуп по voter (анонимный client-id браузера).
+func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, room, id string) {
+	if id == "" || id != filepath.Base(id) {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if _, ok := avatarExt[strings.ToLower(filepath.Ext(id))]; !ok {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Voter string `json:"voter"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	voter := strings.TrimSpace(req.Voter)
+	if l := len(voter); l < 1 || l > 64 {
+		http.Error(w, "bad voter", http.StatusBadRequest)
+		return
+	}
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	// портрет должен существовать
+	if _, err := os.Stat(filepath.Join(as.dir(room), id)); err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	set := as.readLikers(room, id)
+	liked := !set[voter] // toggle
+	if liked {
+		set[voter] = true
+	} else {
+		delete(set, voter)
+	}
+	if err := as.writeLikers(room, id, set); err != nil {
+		http.Error(w, "store", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{"likes": len(set), "liked": liked})
+}
+
+// dispatch роутит /api/rooms/<room>/avatars[/<id>[/like]] по методу.
 func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, room string, rest []string) {
 	if len(rest) == 0 {
 		switch r.Method {
@@ -279,6 +358,14 @@ func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, room str
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+		return
+	}
+	if len(rest) == 2 && rest[1] == "like" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		as.like(w, r, room, rest[0])
 		return
 	}
 	http.Error(w, "not found", http.StatusNotFound)

@@ -131,6 +131,13 @@
       padding: 0 3px; font-size: 11px; line-height: 14px;
       background: #e6c9c9; border: 1px solid #a00; color: #800000;
     }
+    /* лайк: внизу тамбнейла, чем больше — тем реже выдаётся портрет */
+    #avatarThumbs .thumb button.like {
+      top: auto; bottom: -1px; left: -1px; right: auto;
+      background: rgba(0,0,0,.72); border: 1px solid #a00; color: #ff8aa0;
+      font-size: 10px; padding: 0 3px;
+    }
+    #avatarThumbs .thumb button.like.liked { background: #a00; color: #fff; }
 
     /* список палат: ✕ закрывает палату (со всеми звуками/портретами) */
     #roomsBody a { font-weight: bold; }
@@ -390,6 +397,23 @@
     body.dark .gate-box { background: #073642; border-color: #002b36; border-top-color: #b58900; }
     body.dark .gate-title { color: #b58900; }
     body.dark #gatePass { background: #002b36; color: #93a1a1; border-color: #586e75; }
+
+    /* облако диагнозов МКБ-10: теги разного кегля, как классический tag cloud */
+    .tagcloud { line-height: 1.9; }
+    .tagcloud a {
+      display: inline-block; margin: 0 6px; text-decoration: none;
+      color: #0000cc; white-space: nowrap;
+    }
+    .tagcloud a:hover { text-decoration: underline; color: #800000; }
+    .tagcloud a .code { color: #800000; font-family: "Courier New", monospace; font-weight: bold; }
+    .tagcloud a.s1 { font-size: 11px; opacity: .8; }
+    .tagcloud a.s2 { font-size: 13px; }
+    .tagcloud a.s3 { font-size: 15px; }
+    .tagcloud a.s4 { font-size: 18px; font-weight: bold; }
+    .tagcloud a.s5 { font-size: 22px; font-weight: bold; }
+    body.dark .tagcloud a { color: #268bd2; }
+    body.dark .tagcloud a .code { color: #cb4b16; }
+    body.dark .tagcloud a:hover { color: #b58900; }
   </style>
 </head>
 <body>
@@ -463,6 +487,14 @@
             </tbody>
           </table>
           <div id="roomsErr"></div>
+        </div>
+      </details>
+
+      <!-- облако диагнозов МКБ-10 (психические расстройства, класс V, F00-F99) -->
+      <details class="post" id="dxCloud">
+        <summary>Диагнозы — МКБ-10 (класс V, F) <span class="cnt-badge">выбери свой</span></summary>
+        <div class="body">
+          <div class="tagcloud" id="tagCloud"></div>
         </div>
       </details>
     </div>
