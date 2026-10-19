@@ -3,18 +3,14 @@ package main
 // Звуки палат хранятся в ROOMS_DIR/<room>/sounds.
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -32,13 +28,6 @@ type soundMeta struct {
 	ID    string `json:"id"`    // имя файла в хранилище (rand + ext)
 	Label string `json:"label"` // отображаемое имя кнопки
 	URL   string `json:"url"`   // /api/rooms/<room>/sounds/<id>
-}
-
-func newSoundboard(root string) *soundboard {
-	if root == "" {
-		root = "/data/rooms"
-	}
-	return &soundboard{root: root}
 }
 
 func (sb *soundboard) dir(room string) string {
@@ -60,32 +49,8 @@ var soundExt = map[string]string{
 	".opus": "audio/opus",
 }
 
-func sanitizeLabel(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > 32 {
-		s = s[:32]
-	}
-	s = strings.Map(func(r rune) rune {
-		if r < 0x20 {
-			return -1
-		}
-		return r
-	}, s)
-	if s == "" {
-		s = "звук"
-	}
-	return s
-}
-
-func randName() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		// crypto/rand на практике не падает; если упал — фатально
-		// (иначе коллизия id → перезапись чужого звука).
-		log.Fatalf("crypto/rand failed: %v", err)
-	}
-	return hex.EncodeToString(b)
-}
+// sanitizeLabel → общий sanitizeText (main.go): обрезка 32 + def "звук".
+func sanitizeLabel(s string) string { return sanitizeText(s, 32, "звук") }
 
 // GET /api/rooms/<room>/sounds -> список звуков палаты.
 // Label берём из .meta-файла (label\n), если есть.
@@ -200,27 +165,12 @@ func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request, room string
 		return
 	}
 
-	dir := sb.dir(room)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		http.Error(w, "store", http.StatusInternalServerError)
-		return
-	}
-	id := randName() + ext
-	dst, err := os.Create(filepath.Join(dir, id))
+	id, err := writeFileLimited(sb.dir(room), ext, head, file, maxSoundBytes)
 	if err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
-	// голова + остаток, но не больше maxSoundBytes
-	lr := io.LimitReader(io.MultiReader(strings.NewReader(string(head)), file), maxSoundBytes)
-	if _, err := io.Copy(dst, lr); err != nil {
-		_ = dst.Close()
-		_ = os.Remove(filepath.Join(dir, id))
-		http.Error(w, "write", http.StatusInternalServerError)
-		return
-	}
-	_ = dst.Close()
-	_ = os.WriteFile(filepath.Join(dir, id+".meta"), []byte(label), 0o644)
+	_ = os.WriteFile(filepath.Join(sb.dir(room), id+".meta"), []byte(label), 0o644)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -246,9 +196,16 @@ func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request, room, id str
 		return
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	http.ServeContent(w, r, id, time.Now(), f)
+	// ModTime файла — корректные ETag/Last-Modified (time.Now() давал
+	// «всегда свежий» и ломал условные запросы)
+	http.ServeContent(w, r, id, fi.ModTime(), f)
 }
 
 // DELETE /api/rooms/<room>/sounds/<id> -> удалить звук из аптечки палаты.

@@ -92,27 +92,36 @@ func validRoom(s string) bool {
 	return true
 }
 
-func randID() string {
+// randHex: криптостойкая hex-строка (id файлов, identity). Единственная
+// реализация — раньше randID/randName/avatarRandName дублировали её трижды.
+// crypto/rand на практике не падает; если упал — фатально (иначе коллизия
+// id → перезапись чужого файла).
+func randHex() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		// rand.Read из crypto/rand на практике не падает; если упал — это фатально.
 		log.Fatalf("crypto/rand failed: %v", err)
 	}
-	return "anon-" + hex.EncodeToString(b)
+	return hex.EncodeToString(b)
 }
 
-func sanitizeName(s string) string {
+// sanitizeText: обрезка до max байт + вырез управляющих символов; пустой
+// результат → def. Единственная реализация — раньше sanitizeName и
+// sanitizeLabel дублировали её с разными константами.
+func sanitizeText(s string, max int, def string) string {
 	s = strings.TrimSpace(s)
-	if len(s) > 40 {
-		s = s[:40]
+	if len(s) > max {
+		s = s[:max]
 	}
-	// вырезаем управляющие символы, остальное оставляем (имя — UTF-8 произвольное)
-	return strings.Map(func(r rune) rune {
+	s = strings.Map(func(r rune) rune {
 		if r < 0x20 {
 			return -1
 		}
 		return r
 	}, s)
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func (c config) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -131,11 +140,8 @@ func (c config) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity := randID()
-	name := sanitizeName(req.Name)
-	if name == "" {
-		name = "Гость"
-	}
+	identity := "anon-" + randHex()
+	name := sanitizeText(req.Name, 40, "Гость")
 
 	canUpdateOwn := true
 	at := auth.NewAccessToken(c.apiKey, c.apiSecret).

@@ -73,15 +73,18 @@ func toVideo(ctx context.Context, src, dstDir string) (ivf, ogg string, err erro
 		"-t", fmt.Sprint(maxPlaySec),
 		ogg,
 	); err != nil {
-		// видео без звука — делаем тишину на длину видео
+		// видео без звука — делаем тишину на длину видео.
+		// Ошибку аудио-дорожки оборачиваем И ошибку тишины (раньше тут
+		// оборачивалась не та переменная — silErr терялся).
 		if silErr := silentOgg(ctx, ivf, ogg); silErr != nil {
-			return "", "", fmt.Errorf("video audio: %w", err)
+			return "", "", fmt.Errorf("video audio: %v (тишина тоже не удалась: %v)", err, silErr)
 		}
 	}
 	return ivf, ogg, nil
 }
 
 // silentOgg генерит тихий opus такой же длительности, как видео.
+// Битрейт 16k (ниже обычного 24k): тишина не несёт информации, экономим.
 func silentOgg(ctx context.Context, refVideo, dst string) error {
 	return run(ctx, "ffmpeg", "-y",
 		"-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=48000",

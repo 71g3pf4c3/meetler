@@ -4,12 +4,12 @@ package main
 // При отсутствии файла клиент использует web/welcome.mp3 или web/farewell.mp3.
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // cueKinds — допустимые имена джинглов (защита от произвольного имени файла).
@@ -39,9 +39,22 @@ func (sb *soundboard) cueServe(w http.ResponseWriter, r *http.Request, room, kin
 		return
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", soundExt[strings.ToLower(filepath.Ext(p))])
 	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeContent(w, r, filepath.Base(p), time.Now(), f)
+	http.ServeContent(w, r, filepath.Base(p), fi.ModTime(), f)
+}
+
+// removeCueFiles сносит джингл kind ЛЮБОГО расширения — одна «ячейка» на вид.
+func (sb *soundboard) removeCueFiles(room, kind string) {
+	dir := filepath.Join(sb.root, room)
+	for e := range soundExt {
+		_ = os.Remove(filepath.Join(dir, kind+e))
+	}
 }
 
 // POST /api/rooms/<room>/<kind> (multipart: file) -> задать джингл.
@@ -80,15 +93,13 @@ func (sb *soundboard) cueUpload(w http.ResponseWriter, r *http.Request, room, ki
 		return
 	}
 	// снести предыдущий джингл этого вида любого расширения — одна ячейка
-	for e := range soundExt {
-		_ = os.Remove(filepath.Join(dir, kind+e))
-	}
+	sb.removeCueFiles(room, kind)
 	dst, err := os.Create(filepath.Join(dir, kind+ext))
 	if err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
-	lr := io.LimitReader(io.MultiReader(strings.NewReader(string(head)), file), maxSoundBytes)
+	lr := io.LimitReader(io.MultiReader(bytes.NewReader(head), file), maxSoundBytes)
 	if _, err := io.Copy(dst, lr); err != nil {
 		_ = dst.Close()
 		http.Error(w, "write", http.StatusInternalServerError)
@@ -102,10 +113,7 @@ func (sb *soundboard) cueUpload(w http.ResponseWriter, r *http.Request, room, ki
 func (sb *soundboard) cueDelete(w http.ResponseWriter, _ *http.Request, room, kind string) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	dir := filepath.Join(sb.root, room)
-	for e := range soundExt {
-		_ = os.Remove(filepath.Join(dir, kind+e))
-	}
+	sb.removeCueFiles(room, kind)
 	w.WriteHeader(http.StatusNoContent)
 }
 
