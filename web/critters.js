@@ -95,10 +95,22 @@
   // ================= МУХА =================
   const fly = document.createElement('div');
   fly.textContent = '🪰';
+  // pointer-events:auto — сама муха кликабельна (слой #critters прозрачен для
+  // кликов, но муху можно прихлопнуть). cursor:crosshair — «прицел».
   fly.style.cssText =
     'position:absolute;font-size:20px;will-change:transform;display:none;' +
+    'pointer-events:auto;cursor:crosshair;' +
     'filter:drop-shadow(0 1px 1px rgba(0,0,0,.4));';
   layer.appendChild(fly);
+
+  // клик по мухе — прихлопнуть: splat-эмодзи на миг, звук стоп, уход в despawn.
+  fly.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!flyState.active) return;
+    fly.textContent = '💥';
+    flySound.stop();
+    setTimeout(() => { fly.textContent = '🪰'; despawnFly(); }, 180);
+  });
 
   const flyState = {
     active: false,
@@ -149,6 +161,7 @@
 
   function despawnFly() {
     const s = flyState;
+    if (!s.active) return; // уже убрана (клик + таймер не должны дважды планировать)
     s.active = false;
     fly.style.display = 'none';
     flySound.stop();
@@ -157,7 +170,8 @@
   }
 
   function scheduleFly() {
-    setTimeout(spawnFly, rand(20000, 60000)); // случайный промежуток 20–60с
+    // муха — очень редкий гость: ~раз в 2 часа (±30 мин), чтобы не заёбывала
+    setTimeout(spawnFly, rand(90 * 60000, 150 * 60000));
   }
 
   // ================= ТАРАКАН =================
@@ -235,7 +249,7 @@
   }
   requestAnimationFrame(loop);
 
-  // первый выход — не сразу, но и не слишком долго ждать
-  setTimeout(spawnFly, rand(5000, 15000));
+  // первый выход мухи — тоже через ~2 часа (не скоро после загрузки)
+  setTimeout(spawnFly, rand(90 * 60000, 150 * 60000));
   setTimeout(spawnRoach, rand(8000, 20000));
 })();
