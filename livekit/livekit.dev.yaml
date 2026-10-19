@@ -1,7 +1,7 @@
 # LiveKit SFU config — tuned под latency + connection stability.
 # Все значения выставлены осознанно; комментарии объясняют "почему", а не "что".
 
-port: 7880            # signaling (wss) + RoomService API. Caddy проксирует сюда.
+port: 7880            # signaling (wss) + RoomService API. nginx проксирует сюда.
 bind_addresses:
   - "0.0.0.0"
 
@@ -62,7 +62,7 @@ rtc:
 # Это 50% "стабильности коннекта" за NAT. Требует валидного TLS-серта на домен TURN.
 turn:
   # На первом старте certs/turn.* ещё нет (ACME не выписал) → TURN_ENABLED=false.
-  # После `make turn-cert` ставим TURN_ENABLED=true в .env и `make up` повторно.
+  # После установки certs/turn.crt и certs/turn.key включаем TURN_ENABLED=true.
   enabled: false
   tls_port: 5349
   domain: localhost

@@ -1,7 +1,7 @@
 # NixOS-модуль meetler.
 #
 # Обёртка над официальным services.livekit + свой token-svc + reverse-proxy
-# (Caddy или nginx на выбор). Весь tuned-конфиг SFU в services.livekit.settings.
+# nginx. Весь tuned-конфиг SFU в services.livekit.settings.
 #
 # Секреты НЕ в nix store:
 #   - livekit: keyFile  (формат "<key>: <secret>", livekit-server generate-keys)
@@ -19,9 +19,7 @@ let
   tgbridge = self.packages.${pkgs.system}.tgbridge;
   web = mkWeb pkgs;
 
-  proxyGroup = if cfg.reverseProxy == "nginx" then "nginx" else "caddy";
-
-  # Централизуем серт на security.acme → стабильный путь для TURN независимо от proxy.
+  # Централизуем серт на security.acme → стабильный путь для TURN и nginx.
   # webserver использует useACMEHost (не управляет ACME сам), challenge — через webroot.
   acmeDir = "/var/lib/acme/${cfg.domain}";
   acmeChallengeRoot = "/var/lib/acme/acme-challenge";
@@ -70,16 +68,6 @@ in
     acmeEmail = lib.mkOption {
       type = lib.types.str;
       description = "Email для ACME (Let's Encrypt).";
-    };
-
-    reverseProxy = lib.mkOption {
-      type = lib.types.enum [ "caddy" "nginx" ];
-      default = "caddy";
-      description = ''
-        Чем терминировать TLS и проксировать сигналинг/статику/token API.
-        nginx требует явного proxyWebsockets для wss-сигналинга livekit
-        (модуль настраивает это сам).
-      '';
     };
 
     livekitKeyFile = lib.mkOption {
@@ -286,18 +274,18 @@ in
 
     # ACME HTTP-01 через общий webroot. Один cert-order, серт в /var/lib/acme/<domain>,
     # читается и webserver'ом (useACMEHost), и livekit TURN (через SupplementaryGroups).
-    # Challenge-файлы кладутся в webroot; оба webserver'а обслуживают
+    # Challenge-файлы кладутся в webroot; nginx обслуживает
     # /.well-known/acme-challenge/ из него (см. ниже). Это чинит "websocket error":
     # без выписанного серта HTTPS невалиден и браузер рвёт wss.
     security.acme.certs.${cfg.domain} = {
-      group = proxyGroup;
+      group = "nginx";
       webroot = acmeChallengeRoot;
     };
     # services.livekit использует DynamicUser → нет статического users.users.livekit.
     # Даём динамическому юзеру доступ к ACME-серту (для TURN/TLS) через
     # SupplementaryGroups = группа-владелец серта.
     systemd.services.livekit.serviceConfig.SupplementaryGroups =
-      lib.mkIf cfg.enableTurn [ proxyGroup ];
+      lib.mkIf cfg.enableTurn [ "nginx" ];
 
     # --- token-svc ---
     systemd.services.meetler-token = {
@@ -370,46 +358,9 @@ in
       };
     };
 
-    # --- reverse-proxy: Caddy ---
-    # Серт из security.acme (useACMEHost), challenge раздаётся на :80 из webroot.
-    services.caddy = lib.mkIf (cfg.reverseProxy == "caddy") {
-      enable = true;
-      # HTTP :80 — ACME HTTP-01 challenge (серт выписывается здесь), остальное → https.
-      virtualHosts."http://${cfg.domain}".extraConfig = ''
-        handle /.well-known/acme-challenge/* {
-          root * ${acmeChallengeRoot}
-          file_server
-        }
-        handle {
-          redir https://{host}{uri} permanent
-        }
-      '';
-      virtualHosts.${cfg.domain} = {
-        useACMEHost = cfg.domain;
-        extraConfig = ''
-          encode zstd gzip
-
-          handle /api/* {
-            reverse_proxy 127.0.0.1:8080
-          }
-          handle /rtc* {
-            reverse_proxy 127.0.0.1:7880
-          }
-          handle /twirp* {
-            reverse_proxy 127.0.0.1:7880
-          }
-          handle {
-            root * ${web}
-            try_files {path} /index.html
-            file_server
-          }
-        '';
-      };
-    };
-
     # --- reverse-proxy: nginx ---
     # useACMEHost: nginx использует централизованный серт из security.acme.
-    services.nginx = lib.mkIf (cfg.reverseProxy == "nginx") {
+    services.nginx = {
       enable = true;
       recommendedProxySettings = true;
       recommendedTlsSettings = true;

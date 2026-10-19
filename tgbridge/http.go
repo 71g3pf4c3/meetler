@@ -1,7 +1,7 @@
 package main
 
 // HTTP-слой tgbridge: приём "15с → TG" из token-svc.
-// token-svc (за Caddy) переливает WAV-микс палаты сюда; мы транскодим в
+// token-svc (за nginx) переливает WAV-микс палаты сюда; мы транскодим в
 // ogg/opus (ffmpeg, как и всё остальное) и постим голосовым (SendVoice) во
 // все Telegram-чаты, привязанные к этой палате (/palata <room>).
 

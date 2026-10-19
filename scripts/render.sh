@@ -18,8 +18,8 @@ set +a
 : "${LIVEKIT_API_KEY:?не задан в .env}"
 : "${LIVEKIT_API_SECRET:?не задан в .env}"
 : "${TURN_DOMAIN:?не задан в .env}"
-# TURN выключен, пока нет ACME-серта. После ./scripts/sync-turn-cert.sh
-# выстави TURN_ENABLED=true в .env и перезапусти.
+# TURN выключен, пока нет TLS-серта в certs/turn.crt и certs/turn.key.
+# После установки серта выстави TURN_ENABLED=true в .env и перезапусти.
 TURN_ENABLED="${TURN_ENABLED:-false}"
 
 # экранируем значения для sed (на случай спецсимволов в secret)

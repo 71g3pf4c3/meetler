@@ -77,7 +77,7 @@ async function mintToken(roomName, name) {
 }
 
 function wsUrl() {
-  // signaling идёт через тот же домен по wss (Caddy проксирует /rtc).
+  // signaling идёт через тот же домен по wss (nginx проксирует /rtc).
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${location.host}`;
 }

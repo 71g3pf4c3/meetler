@@ -76,7 +76,7 @@ adaptive stream, агрессивный авто-fallback UDP → ICE/TCP → TU
 ## Архитектура
 
 ```
-браузер ──wss(443)──► Caddy ──► LiveKit signaling (7880)
+браузер ──wss(443)──► nginx ──► LiveKit signaling (7880)
    │                    └──► token-svc (анонимный room-JWT)
    │
    └──RTP/UDP(50000-60000)──► LiveKit SFU   (напрямую, host-network)
@@ -87,7 +87,7 @@ adaptive stream, агрессивный авто-fallback UDP → ICE/TCP → TU
   на публичный IP без Docker userland proxy (иначе ICE деградирует).
 - **token-svc** — Go, выдаёт короткоживущий room-JWT со случайным `anon-<id>`.
   identity всегда серверный рандом — клиент не может выдать себя за другого.
-- **caddy** — TLS (авто-ACME), проксирует wss-сигналинг, token API, отдаёт статику.
+- **nginx** — TLS, проксирует wss-сигналинг, token API, отдаёт статику.
 - **redis** — состояние комнат/роутинг (нужен даже на одной ноде).
 
 ## Требования
@@ -95,12 +95,13 @@ adaptive stream, агрессивный авто-fallback UDP → ICE/TCP → TU
 - Публичный IP на хосте (прямой, без NAT перед ним — иначе см. раздел NAT).
 - DNS A/AAAA `SITE_DOMAIN` → этот хост.
 - Открытые порты (firewall / security group):
-  - `443/tcp`, `80/tcp` — Caddy (TLS + ACME).
+  - `443/tcp`, `80/tcp` — nginx (HTTPS + редирект с HTTP).
   - `50000-60000/udp` — RTP media.
   - `7881/tcp` — ICE-over-TCP fallback.
   - `5349/tcp` — TURN/TLS.
   - `30000-40000/udp` — TURN relay.
 - Docker + docker compose, `bash`, `sed`, coreutils.
+- TLS-сертификат и ключ для `SITE_DOMAIN` (и `TURN_DOMAIN`, если он отличается).
 
 ## Запуск
 
@@ -108,15 +109,23 @@ adaptive stream, агрессивный авто-fallback UDP → ICE/TCP → TU
 make keys          # сгенерить API keypair в .env
 # отредактируй .env: SITE_DOMAIN, TURN_DOMAIN (обычно = SITE_DOMAIN)
 
-make up            # поднять стек (TURN пока off — серта ещё нет)
-# дождись, пока Caddy выпишет ACME-серт (make logs)
-
-make turn-cert     # вытащить серт Caddy в ./certs для TURN
+mkdir -p certs
+# Выпусти сертификат своим ACME-клиентом и установи полную цепочку и ключ:
+install -m 0644 /path/to/fullchain.pem certs/turn.crt
+install -m 0600 /path/to/privkey.pem certs/turn.key
 # в .env: TURN_ENABLED=true
-make up            # перезапуск — теперь TURN/TLS активен
+make up
 ```
 
 Открой `https://SITE_DOMAIN`, введи комнату → ты в конференции.
+
+В Compose nginx использует готовые сертификаты из `certs/`; их выпуск и обновление
+выполняет внешний ACME-клиент. В NixOS сертификатами управляет `security.acme`.
+Для локальной разработки без TLS:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+Открой `http://localhost:8088`.
 
 ## Tuned-настройки (что и зачем)
 
@@ -151,11 +160,12 @@ make up            # перезапуск — теперь TURN/TLS активе
 - добавь `skip_external_ip_validation: true`.
 Floating IP должен 1:1 мапиться на порт инстанса, security group — открыть UDP range.
 
-## Ротация TURN-серта
+## Ротация TLS-серта
 
-Caddy обновляет ACME-серт сам, но встроенный TURN читает файл. По таймеру:
+После обновления сертификата внешним ACME-клиентом замени `certs/turn.crt`
+(полная цепочка) и `certs/turn.key`, затем перезапусти nginx и TURN:
 ```bash
-make turn-cert && docker compose restart livekit
+docker compose restart nginx livekit
 ```
 
 ## Observability
@@ -221,7 +231,7 @@ services.meetler.telegram = {
 
 Flake экспортирует `nixosModules.default`, который оборачивает официальный
 `services.livekit` с tuned-настройками + token-svc (systemd, DynamicUser) +
-reverse-proxy (Caddy или nginx) + ACME + firewall.
+nginx + ACME + firewall.
 
 ```nix
 # flake.nix твоей системы (репозиторий на GitHub пока называется hit-meet)
@@ -237,7 +247,6 @@ reverse-proxy (Caddy или nginx) + ACME + firewall.
             enable = true;
             domain = "meet.example.com";
             acmeEmail = "admin@example.com";
-            reverseProxy = "nginx";          # или "caddy" (дефолт)
             livekitKeyFile = "/run/secrets/livekit-keys.yaml";
             tokenEnvironmentFile = "/run/secrets/token.env";
             nodeIp = "203.0.113.10";         # floating IP для облака/NAT
@@ -254,15 +263,14 @@ reverse-proxy (Caddy или nginx) + ACME + firewall.
 - `tokenEnvironmentFile` — `LIVEKIT_API_KEY=...` и `LIVEKIT_API_SECRET=...`,
   та же пара key/secret. Клади через sops-nix / agenix / Vault, не в git.
 
-Выбор reverse-proxy: nginx настраивается с `proxyWebsockets` для wss-сигналинга
-(без этого livekit-сигналинг не поднимется) и 24h read/send timeout на `/rtc`.
-Caddy проксирует WS прозрачно. ACME централизован в `security.acme`, серт шарится
-между webserver и встроенным TURN livekit через группу-владельца.
+nginx настраивается с `proxyWebsockets` для wss-сигналинга и 24h read/send timeout
+на `/rtc`. ACME централизован в `security.acme`, сертификат доступен nginx
+и встроенному TURN LiveKit через группу `nginx`.
 
 На первом деплое (серта ещё нет) можно `services.meetler.enableTurn = false`,
 после выписки серта — снять флаг и пересобрать.
 
-Dev-shell: `nix develop` (go, gopls, livekit, livekit-cli, caddy, nginx).
+Dev-shell: `nix develop` (go, gopls, livekit, livekit-cli, nginx).
 
 Примечание: nixpkgs тянет livekit из своего пина (может быть чуть старее docker-пина
 v1.13.10 — tuned-поля конфига идентичны, API совместим).

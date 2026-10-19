@@ -29,7 +29,7 @@
         let pkgs = import nixpkgs { inherit system; }; in
         {
           default = pkgs.mkShell {
-            packages = with pkgs; [ go gopls livekit livekit-cli caddy nginx ];
+            packages = with pkgs; [ go gopls livekit livekit-cli nginx ];
           };
         });
 

@@ -5,7 +5,7 @@
 # рендеренный из шаблона конфиг (содержит ключи)
 livekit/livekit.yaml
 
-# TLS-серты TURN (вытягиваются из Caddy)
+# TLS-серты nginx и TURN
 certs/
 
 # nix

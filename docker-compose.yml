@@ -3,8 +3,8 @@
 # Media networking (критично, читай README):
 #   - LiveKit SFU раздаёт RTP по UDP 50000-60000 → эти порты НЕ за прокси, host-level.
 #   - TURN-over-TLS на 5349 для клиентов за firewall (fallback, когда UDP зарезан).
-#   - Caddy терминирует TLS на 443 для сигналинга (wss) + статики клиента + token API.
-#   - TURN/TLS тоже слушает host-level на 5349, Caddy его НЕ проксирует (это не HTTP).
+#   - nginx терминирует TLS на 443 для сигналинга (wss) + статики клиента + token API.
+#   - TURN/TLS тоже слушает host-level на 5349, nginx его НЕ проксирует (это не HTTP).
 #
 # UDP media НЕ использует Docker userland proxy (медленный, ломает ICE):
 #   network_mode: host для livekit — самый надёжный путь для self-host одной ноды.
@@ -66,26 +66,26 @@ services:
       - "8080"
     # публикуем ТОЛЬКО на loopback хоста: tgbridge (host-network) заливает в
     # аптечку через /soundboardsave по 127.0.0.1:8080. Наружу не светится —
-    # публичный доступ идёт через Caddy. Caddy видит token-svc по internal-сети.
+    # публичный доступ идёт через nginx. nginx видит token-svc по internal-сети.
     ports:
       - "127.0.0.1:8080:8080"
 
-  caddy:
-    image: caddy:2-alpine
+  nginx:
+    image: nginx:stable-alpine
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/locations.conf:/etc/nginx/meetler-locations.conf:ro
       - ./web:/srv/web:ro
-      - caddy_data:/data
-      - caddy_config:/config
+      - ./certs:/certs:ro
     environment:
       SITE_DOMAIN: ${SITE_DOMAIN}
     networks: [internal]
     # livekit работает в host-network, поэтому его signaling (127.0.0.1:7880)
-    # с точки зрения Caddy достижим через host-gateway.
+    # с точки зрения nginx достижим через host-gateway.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -118,6 +118,4 @@ networks:
     driver: bridge
 
 volumes:
-  caddy_data:
-  caddy_config:
   rooms:
