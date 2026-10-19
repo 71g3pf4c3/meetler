@@ -582,43 +582,32 @@ function broadcastSfxUpdate() {
   } catch (_) {}
 }
 
-// --- звук приветствия при входе участника ---
-let welcomeAudio = null;
-function playWelcome() {
+// playCue: проиграть джингл палаты (welcome/farewell). Сначала HEAD-проверка
+// кастомного (надёжнее, чем ловить 404 через <audio>.onerror, который на
+// текстовый 404-ответ срабатывает не всегда); нет кастома → дефолтный файл.
+async function playCue(kind, defaultUrl) {
   if (!room) return;
-  // кастомный звук палаты, иначе дефолтный /welcome.mp3. HEAD не делаем —
-  // <audio> сам отвалится на 404 кастома, тогда играем дефолт.
-  const custom = roomApi(room.name) + '/welcome';
   const vol = sbVolume();
   if (vol <= 0) return; // уважаем индивидуальный mute аптечки
-  const a = new Audio(custom);
+  let url = defaultUrl;
+  try {
+    const custom = roomApi(room.name) + '/' + kind;
+    const res = await fetch(custom, { method: 'HEAD' });
+    if (res.ok) url = custom;
+  } catch (_) { /* нет кастома → дефолт */ }
+  const a = new Audio(url);
   a.volume = vol;
-  a.onerror = () => {
-    const d = new Audio('/welcome.mp3');
-    d.volume = vol;
-    d.play().catch(() => {});
-  };
   a.play().catch(() => {
-    const d = new Audio('/welcome.mp3');
-    d.volume = vol;
-    d.play().catch(() => {});
+    // last-resort: если кастом почему-то не проиграл — дефолт
+    if (url !== defaultUrl) { const d = new Audio(defaultUrl); d.volume = vol; d.play().catch(() => {}); }
   });
-  welcomeAudio = a;
 }
 
-// звук прощания при уходе участника: кастомный палаты, иначе дефолт /farewell.wav.
-// Симметрично playWelcome. Не играем на уход служебного tgbridge.
-function playFarewell() {
-  if (!room) return;
-  const vol = sbVolume();
-  if (vol <= 0) return;
-  const custom = roomApi(room.name) + '/farewell';
-  const a = new Audio(custom);
-  a.volume = vol;
-  const fallback = () => { const d = new Audio('/farewell.wav'); d.volume = vol; d.play().catch(() => {}); };
-  a.onerror = fallback;
-  a.play().catch(fallback);
-}
+// --- звук приветствия при входе участника ---
+function playWelcome() { playCue('welcome', '/welcome.mp3'); }
+
+// звук прощания при уходе участника. Не играем на уход служебного tgbridge.
+function playFarewell() { playCue('farewell', '/farewell.mp3'); }
 
 // локальный тайл: создаётся СРАЗУ после входа (с аватаркой из пула), видео
 // подменяет фон когда включается. Раньше без камеры своего тайла не было.
