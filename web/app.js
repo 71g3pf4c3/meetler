@@ -82,6 +82,45 @@ function wsUrl() {
   return `${proto}://${location.host}`;
 }
 
+// --- разворот тайла на всё окно ---
+// Клик по телу тайла (не по контролам) ИЛИ отдельная кнопка ⤢/⤡ разворачивает
+// трансляцию на весь экран; повторный клик/кнопка — сворачивает. Максимум один
+// развёрнутый тайл.
+function toggleMax(el) {
+  const willMax = !el.classList.contains('max');
+  // свернуть любой другой развёрнутый
+  document.querySelectorAll('.tile.max').forEach((o) => {
+    if (o !== el) { o.classList.remove('max'); syncMaxBtn(o); }
+  });
+  el.classList.toggle('max', willMax);
+  document.body.classList.toggle('tile-maximized', willMax);
+  syncMaxBtn(el);
+}
+
+function syncMaxBtn(el) {
+  const b = el.querySelector('.maxbtn');
+  if (!b) return;
+  const maxed = el.classList.contains('max');
+  b.textContent = maxed ? '⤡' : '⤢';
+  b.title = maxed ? 'Свернуть' : 'Развернуть на всё окно';
+}
+
+// навесить кнопку разворота + клик-по-тайлу на элемент тайла
+function addMaxControls(el) {
+  const b = document.createElement('button');
+  b.className = 'maxbtn';
+  b.textContent = '⤢';
+  b.title = 'Развернуть на всё окно';
+  b.onclick = (e) => { e.stopPropagation(); toggleMax(el); };
+  el.appendChild(b);
+  // клик по самому тайлу тоже разворачивает/сворачивает, но НЕ когда кликнули
+  // по контролу (ползунок/кик/кнопки) — у них свои обработчики
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('.vol, .kick, .maxbtn, .sfxdel')) return;
+    toggleMax(el);
+  });
+}
+
 function ensureTile(participant) {
   let t = tiles.get(participant.sid);
   if (t) return t;
@@ -127,6 +166,8 @@ function ensureTile(participant) {
     }
   };
   el.appendChild(kick);
+
+  addMaxControls(el); // кнопка разворота + клик по тайлу = на всё окно
 
   grid.appendChild(el);
   t = {
@@ -491,6 +532,7 @@ function ensureLocalTile() {
   if (u) ph.style.backgroundImage = `url(${u})`;
   el.appendChild(ph);
   el.appendChild(label);
+  addMaxControls(el); // разворот своего окошка на весь экран
   grid.insertBefore(el, grid.firstChild);
   localTile = el;
   return localTile;
@@ -1043,6 +1085,14 @@ $('themeToggle').onclick = () => {
 };
 applyTheme(localStorage.getItem('meetlerTheme') === 'dark' ? 'dark' : 'light');
 
+// Esc — свернуть развёрнутый на всё окно тайл
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const m = document.querySelector('.tile.max');
+    if (m) toggleMax(m);
+  }
+});
+
 // --- Запись последних 15 секунд микса комнаты ---
 // PCM-кольцевой буфер (ScriptProcessor). Даёт РОВНО последние 15с и валидный файл
 // (webm нельзя обрезать по времени на клиенте — заголовок только в первом чанке).
@@ -1164,6 +1214,7 @@ function cleanup() {
   tiles.forEach((t) => t.el.remove());
   tiles.clear();
   if (localTile) { localTile.remove(); localTile = null; }
+  document.body.classList.remove('tile-maximized'); // сбросить разворот
   if (avatarsTimer) { clearInterval(avatarsTimer); avatarsTimer = null; }
   if (wnavTimer) { clearInterval(wnavTimer); wnavTimer = null; }
   if (votesTimer) { clearInterval(votesTimer); votesTimer = null; }

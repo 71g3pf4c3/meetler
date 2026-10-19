@@ -202,6 +202,22 @@
       padding: 0 4px; font-size: 11px; line-height: 14px;
       background: #e6c9c9; border: 1px solid #a00; color: #800000;
     }
+    /* клик по трансляции разворачивает её; явная кнопка — в левом верхнем углу */
+    .tile { cursor: zoom-in; }
+    .tile .maxbtn {
+      position: absolute; top: 4px; left: 4px; z-index: 2;
+      padding: 0 4px; font-size: 12px; line-height: 14px;
+      background: rgba(0,0,0,.6); border: 1px solid #888; color: #ffd34d;
+    }
+    /* развёрнутый на всё окно тайл */
+    .tile.max {
+      position: fixed; inset: 0; width: 100vw; height: 100vh;
+      z-index: 100; aspect-ratio: auto; border: none; cursor: zoom-out;
+      background: #000;
+    }
+    .tile.max video { object-fit: contain; }
+    .tile.max .ph { background-size: contain; background-color: #000; }
+    body.tile-maximized { overflow: hidden; }
     /* плейсхолдер при выключенной камере — дефолтная аватарка */
     .tile .ph {
       width: 100%; height: 100%;
