@@ -111,6 +111,17 @@ in
       description = "Лимит участников на комнату.";
     };
 
+    appPassword = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Общий пароль на весь сайт (центральная аутентификация, как basic auth).
+        null = аутентификация выключена (сайт открыт).
+        ВНИМАНИЕ: значение попадёт в /nix/store (мир-читаемо). Для прода задавай
+        APP_PASSWORD через tokenEnvironmentFile, а не здесь.
+      '';
+    };
+
     nodeIp = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -305,7 +316,7 @@ in
           # персистентный реестр палат: /var/lib/meetler/rooms/<палата>/{sounds,avatars}
           # (DynamicUser-friendly, в том же StateDirectory)
           "ROOMS_DIR=/var/lib/meetler/rooms"
-        ];
+        ] ++ lib.optional (cfg.appPassword != null) "APP_PASSWORD=${cfg.appPassword}";
         DynamicUser = true;
         # systemd создаёт И чистит владение на КАЖДОМ старте под текущий
         # DynamicUser UID. Явно даём rooms-подкаталог, иначе при смене UID

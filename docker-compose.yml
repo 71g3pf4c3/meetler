@@ -46,6 +46,8 @@ services:
       TOKEN_TTL: ${TOKEN_TTL:-6h}
       ROOM_MAX_PARTICIPANTS: ${ROOM_MAX_PARTICIPANTS:-30}
       LISTEN_ADDR: ":8080"
+      # центральная аутентификация: общий пароль на весь сайт. Пусто = выключено.
+      APP_PASSWORD: ${APP_PASSWORD:-}
       # персистентный реестр палат: ROOMS_DIR/<палата>/{sounds,avatars}
       ROOMS_DIR: /data/rooms
       # список палат (/api/rooms): livekit в host-network. ХАРДКОД

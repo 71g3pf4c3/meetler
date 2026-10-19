@@ -219,9 +219,15 @@ func main() {
 	mux.HandleFunc("/api/rooms/", roomsSvc.handleRoomScoped) // DELETE палаты + звуки/портреты
 	mux.HandleFunc("/api/kick", roomsSvc.handleKick)         // выписать участника (кто угодно)
 
+	// центральная аутентификация: один общий пароль (APP_PASSWORD). Если пуст —
+	// гейт выключен, сайт открыт. /api/auth и /healthz — всегда доступны.
+	gate := newAuthGate(os.Getenv("APP_PASSWORD"))
+	mux.HandleFunc("/api/auth", gate.handle)
+	var handler http.Handler = gate.wrap(mux)
+
 	srv := &http.Server{
 		Addr:              cfg.listen,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		// ReadTimeout побольше: upload звука (до 5MiB) по медленному аплинку.
 		ReadTimeout:  60 * time.Second,
@@ -234,5 +240,10 @@ func main() {
 	}
 	log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, rooms=%s)",
 		cfg.listen, cfg.ttl, cfg.roomMax, storage)
+	if gate.enabled() {
+		log.Printf("central auth: ON (APP_PASSWORD set)")
+	} else {
+		log.Printf("central auth: OFF (APP_PASSWORD empty — site open)")
+	}
 	log.Fatal(srv.ListenAndServe())
 }
