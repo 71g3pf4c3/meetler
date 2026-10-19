@@ -42,7 +42,15 @@ type Publisher struct {
 	mu    sync.Mutex
 	rooms map[string]*roomConn
 	jail  map[string]time.Time // палата -> до какого момента бот «в тюрьме»
+
+	stop chan struct{} // закрытие Publisher (останавливает reaper)
 }
+
+// publishWait — потолок ожидания окончания записи файла в комнату.
+// Медиа уже обрезано до maxPlaySec, поэтому норма — укладываться сильно
+// раньше; если LiveKit завис и OnWriteComplete не пришёл — не висим вечно
+// (раньше <-done висел навсегда: горутина + room-коннект утекали).
+var publishWait = (maxPlaySec + 10) * time.Second
 
 type roomConn struct {
 	room     *lksdk.Room
@@ -58,9 +66,26 @@ func NewPublisher(url, apiKey, apiSecret string, idleTTL time.Duration) *Publish
 		url: url, apiKey: apiKey, apiSecret: apiSecret, idleTTL: idleTTL,
 		rooms: map[string]*roomConn{},
 		jail:  map[string]time.Time{},
+		stop:  make(chan struct{}),
 	}
 	go p.reaper()
 	return p
+}
+
+// Close: остановить reaper и порвать все комнатные коннекты (graceful shutdown).
+func (p *Publisher) Close() {
+	close(p.stop)
+	var toClose []*lksdk.Room
+	p.mu.Lock()
+	for _, rc := range p.rooms {
+		rc.intentional.Store(true) // сами рвём — OnDisconnected не джейлит
+		toClose = append(toClose, rc.room)
+	}
+	p.rooms = map[string]*roomConn{}
+	p.mu.Unlock()
+	for _, r := range toClose {
+		r.Disconnect() // вне лока — избегаем reentrant lock в OnDisconnected
+	}
 }
 
 // jailRoom помечает палату «в тюрьме» на jailCooldown и выбрасывает её коннект:
@@ -98,7 +123,13 @@ func (p *Publisher) jailed(palata string) bool {
 
 func (p *Publisher) reaper() {
 	t := time.NewTicker(10 * time.Second)
-	for range t.C {
+	defer t.Stop()
+	for {
+		select {
+		case <-p.stop:
+			return
+		case <-t.C:
+		}
 		var toClose []*lksdk.Room
 		p.mu.Lock()
 		for name, rc := range p.rooms {
@@ -121,11 +152,15 @@ func (p *Publisher) getRoom(palata string) (*lksdk.Room, error) {
 		return nil, errJailed
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if rc, ok := p.rooms[palata]; ok {
 		rc.lastUsed = time.Now()
+		p.mu.Unlock()
 		return rc.room, nil
 	}
+	p.mu.Unlock()
+
+	// коннект НЕ под мьютексом (ConnectToRoom — секунды; под локом он
+	// блокировал jailRoom/reaper и параллельные публикации в другие палаты)
 	intentional := new(atomic.Bool)
 	cb := lksdk.NewRoomCallback()
 	// кик бота = разрыв соединения. Джейлим палату на кулдаун, чтобы не
@@ -146,7 +181,26 @@ func (p *Publisher) getRoom(palata string) (*lksdk.Room, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect palata %q: %w", palata, err)
 	}
+
+	// double-check: за время коннекта конкурент мог (а) подключиться сам,
+	// (б) кикнуть бота (jail). Наш коннект может оказаться лишним.
+	p.mu.Lock()
+	if rc, ok := p.rooms[palata]; ok {
+		rc.lastUsed = time.Now()
+		existing := rc.room
+		p.mu.Unlock()
+		intentional.Store(true) // свой рвём умышленно — не джейлить
+		room.Disconnect()
+		return existing, nil
+	}
+	if until, ok := p.jail[palata]; ok && time.Now().Before(until) {
+		p.mu.Unlock()
+		intentional.Store(true)
+		room.Disconnect()
+		return nil, errJailed
+	}
 	p.rooms[palata] = &roomConn{room: room, lastUsed: time.Now(), intentional: intentional}
+	p.mu.Unlock()
 	return room, nil
 }
 
@@ -174,7 +228,14 @@ func (p *Publisher) PublishAudio(palata, oggPath string) error {
 		}
 		return fmt.Errorf("publish audio: %w", err)
 	}
-	<-done
+	select {
+	case <-done:
+	case <-time.After(publishWait):
+		// LiveKit завис / OnWriteComplete не пришёл: не висим вечно —
+		// раньше горутина и room-коннект утекали навсегда. Трек стопаем.
+		_ = track.Close()
+		return fmt.Errorf("audio: запись не завершилась за %v", publishWait)
+	}
 	// небольшой хвост, чтобы последние пакеты дошли до подписчиков
 	time.Sleep(300 * time.Millisecond)
 	_ = room.LocalParticipant.UnpublishTrack(pub.SID())
@@ -225,8 +286,24 @@ func (p *Publisher) PublishVideo(palata, ivfPath, oggPath string) error {
 		return fmt.Errorf("publish video-audio: %w", err)
 	}
 
-	<-vdone
-	<-adone
+	// общий дедлайн на ОБА трека (vdone+adone): таймер фитнёт один раз,
+	// каждый select видит его независимо
+	wait := time.NewTimer(publishWait)
+	defer wait.Stop()
+	select {
+	case <-vdone:
+	case <-wait.C:
+		_ = vtrack.Close()
+		_ = atrack.Close()
+		return fmt.Errorf("video: запись не завершилась за %v", publishWait)
+	}
+	select {
+	case <-adone:
+	case <-wait.C:
+		_ = vtrack.Close()
+		_ = atrack.Close()
+		return fmt.Errorf("video: аудио-дорожка не завершилась за %v", publishWait)
+	}
 	time.Sleep(300 * time.Millisecond)
 	_ = room.LocalParticipant.UnpublishTrack(vpub.SID())
 	_ = room.LocalParticipant.UnpublishTrack(apub.SID())

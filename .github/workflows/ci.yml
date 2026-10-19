@@ -1,0 +1,77 @@
+# CI: линт Go-сервисов, синтаксис фронтенда, e2e (Playwright, mock /api/*).
+# e2e гоняется против локальной статики web/ (serve-static.js) — LiveKit
+# и бэк не нужны, стабильно и без секретов. Полный стек (docker compose)
+# — отдельная ручная задача, здесь только детерминированный smoke.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: |
+            api/go.sum
+            tgbridge/go.sum
+
+      - name: api — build + vet
+        working-directory: api
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: tgbridge — build + vet
+        working-directory: tgbridge
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: фронт — синтаксис (node --check)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # app.js — ES-модуль: node --check парсит .js как CommonJS и падает
+      # на import. Копируем в .mjs, чтобы включить module-режим.
+      - run: |
+          cp web/app.js /tmp/chk-app.mjs && node --check /tmp/chk-app.mjs
+          cp web/critters.js /tmp/chk-crit.mjs && node --check /tmp/chk-crit.mjs
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: install
+        working-directory: e2e
+        run: npm install
+
+      - name: install chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: test (mock /api/*, без бэка)
+        working-directory: e2e
+        run: npx playwright test
+
+      - name: 'artifact: report'
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 7

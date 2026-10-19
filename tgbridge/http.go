@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -19,13 +20,13 @@ import (
 )
 
 // serveHTTP принимает аудио от API по заданному адресу.
-func (a *app) serveHTTP(addr string) {
+func (a *app) serveHTTP(addr string) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tg-voice", a.handleTGVoice)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	srv := &http.Server{
+	a.httpSrv = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -33,9 +34,12 @@ func (a *app) serveHTTP(addr string) {
 		WriteTimeout:      60 * time.Second,
 	}
 	log.Printf("tgbridge http listening on %s", addr)
-	if err := srv.ListenAndServe(); err != nil {
-		log.Printf("tgbridge http: %v", err)
-	}
+	go func() {
+		if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("tgbridge http: %v", err)
+		}
+	}()
+	return a.httpSrv
 }
 
 // handleTGVoice: POST /tg-voice?room=<palata> (multipart: file=WAV).

@@ -54,9 +54,12 @@ func (a *app) uploadSound(ctx context.Context, palata, oggPath, label string) er
 		return err
 	}
 	if label != "" {
-		_ = mw.WriteField("label", label)
+		_ = mw.WriteField("label", label) // на bytes.Buffer практически не падает
 	}
-	_ = mw.Close()
+	// Close финализирует multipart — без него форма malformed (API → 400)
+	if err := mw.Close(); err != nil {
+		return err
+	}
 
 	url := a.soundsvcURL + "/api/rooms/" + palata + "/sounds"
 	c, cancel := context.WithTimeout(ctx, 30*time.Second)

@@ -41,6 +41,8 @@ services:
       APP_PASSWORD: ${APP_PASSWORD:-}
       # персистентный реестр палат: ROOMS_DIR/<палата>/{sounds,avatars}
       ROOMS_DIR: /data/rooms
+      # тихие палаты (csv): не закрываются, бот в них не ходит
+      PROTECTED_ROOMS: ${PROTECTED_ROOMS:-tishina}
       # LiveKit работает в сети хоста; API обращается к нему через host-gateway.
       LIVEKIT_URL: ws://host.docker.internal:7880
       # Telegram-мост доступен через host-gateway при включённом профиле telegram.
@@ -91,6 +93,10 @@ services:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
       DEFAULT_PALATA: ${DEFAULT_PALATA:-telegram}
+      # тихие палаты — тот же список, что у api
+      PROTECTED_ROOMS: ${PROTECTED_ROOMS:-tishina}
+      # персист привязок /palata (пусто = в памяти)
+      PALATA_STORE_FILE: ${PALATA_STORE_FILE:-}
       # TTS: задай PIPER_MODEL=/models/ru.onnx и примонтируй модель через override,
       # иначе озвучка текста выключена (медиа работает без TTS).
       PIPER_MODEL: ${PIPER_MODEL:-}

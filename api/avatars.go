@@ -3,18 +3,14 @@ package main
 // Портреты палат хранятся в ROOMS_DIR/<room>/avatars.
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -32,13 +28,6 @@ type avatarMeta struct {
 	ID    string `json:"id"`
 	URL   string `json:"url"`   // /api/rooms/<room>/avatars/<id>
 	Likes int    `json:"likes"` // число лайков (чем больше — тем реже выдаётся)
-}
-
-func newAvatarStore(root string) *avatarStore {
-	if root == "" {
-		root = "/data/rooms"
-	}
-	return &avatarStore{root: root}
 }
 
 func (as *avatarStore) dir(room string) string {
@@ -86,16 +75,6 @@ var avatarExt = map[string]string{
 	".png":  "image/png",
 	".gif":  "image/gif",
 	".webp": "image/webp",
-}
-
-func avatarRandName() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		// crypto/rand на практике не падает; если упал — фатально
-		// (иначе коллизия имени → перезапись чужого аватара).
-		log.Fatalf("crypto/rand failed: %v", err)
-	}
-	return hex.EncodeToString(b)
 }
 
 // sniffImage проверяет содержимое по magic bytes (расширению не доверяем).
@@ -197,25 +176,11 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room strin
 		return
 	}
 
-	dir := as.dir(room)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		http.Error(w, "store", http.StatusInternalServerError)
-		return
-	}
-	id := avatarRandName() + ext
-	dst, err := os.Create(filepath.Join(dir, id))
+	id, err := writeFileLimited(as.dir(room), ext, head, file, maxAvatarBytes)
 	if err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
-	lr := io.LimitReader(io.MultiReader(strings.NewReader(string(head)), file), maxAvatarBytes)
-	if _, err := io.Copy(dst, lr); err != nil {
-		_ = dst.Close()
-		_ = os.Remove(filepath.Join(dir, id))
-		http.Error(w, "write", http.StatusInternalServerError)
-		return
-	}
-	_ = dst.Close()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -240,9 +205,14 @@ func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request, room, id st
 		return
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	http.ServeContent(w, r, id, time.Now(), f)
+	http.ServeContent(w, r, id, fi.ModTime(), f)
 }
 
 // DELETE /api/rooms/<room>/avatars/<id> -> убрать картинку из галереи палаты.

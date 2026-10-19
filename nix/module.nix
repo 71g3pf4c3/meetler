@@ -47,6 +47,14 @@ in
       default = "meetler";
       description = "Directory under /var/lib for rooms, sounds and avatars.";
     };
+    protectedRooms = lib.mkOption {
+      type = lib.types.str;
+      default = "tishina";
+      description = ''
+        Comma-separated quiet rooms: always listed, cannot be closed by
+        voting or DELETE, tgbridge refuses to publish there.
+      '';
+    };
     openFirewall = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -100,6 +108,7 @@ in
         LISTEN_ADDR = "127.0.0.1:${toString cfg.port}";
         LIVEKIT_URL = livekitURL;
         ROOMS_DIR = "/var/lib/${cfg.stateDirectory}/rooms";
+        PROTECTED_ROOMS = cfg.protectedRooms;
       }
       // lib.optionalAttrs cfg.telegram.enable {
         TGBRIDGE_URL = "http://127.0.0.1:${toString cfg.telegram.port}";
@@ -140,6 +149,8 @@ in
         SOUNDSVC_URL = backendURL;
         TGBRIDGE_HTTP_ADDR = "127.0.0.1:${toString cfg.telegram.port}";
         XDG_CACHE_HOME = "/var/cache/meetler-tgbridge";
+        PROTECTED_ROOMS = cfg.protectedRooms;
+        PALATA_STORE_FILE = "/var/lib/meetler-tgbridge/palatas.json";
       }
       // lib.optionalAttrs (cfg.telegram.piperModel != null) {
         PIPER_MODEL = toString cfg.telegram.piperModel;
@@ -150,6 +161,8 @@ in
         EnvironmentFile = cfg.environmentFiles ++ [ cfg.telegram.environmentFile ];
         DynamicUser = true;
         CacheDirectory = "meetler-tgbridge";
+        StateDirectory = "meetler-tgbridge";
+        StateDirectoryMode = "0700";
         PrivateTmp = true;
         Restart = "on-failure";
         RestartSec = "5s";

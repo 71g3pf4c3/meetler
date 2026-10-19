@@ -2,14 +2,17 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/livekit/protocol/auth"
@@ -89,27 +92,36 @@ func validRoom(s string) bool {
 	return true
 }
 
-func randID() string {
+// randHex: криптостойкая hex-строка (id файлов, identity). Единственная
+// реализация — раньше randID/randName/avatarRandName дублировали её трижды.
+// crypto/rand на практике не падает; если упал — фатально (иначе коллизия
+// id → перезапись чужого файла).
+func randHex() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		// rand.Read из crypto/rand на практике не падает; если упал — это фатально.
 		log.Fatalf("crypto/rand failed: %v", err)
 	}
-	return "anon-" + hex.EncodeToString(b)
+	return hex.EncodeToString(b)
 }
 
-func sanitizeName(s string) string {
+// sanitizeText: обрезка до max байт + вырез управляющих символов; пустой
+// результат → def. Единственная реализация — раньше sanitizeName и
+// sanitizeLabel дублировали её с разными константами.
+func sanitizeText(s string, max int, def string) string {
 	s = strings.TrimSpace(s)
-	if len(s) > 40 {
-		s = s[:40]
+	if len(s) > max {
+		s = s[:max]
 	}
-	// вырезаем управляющие символы, остальное оставляем (имя — UTF-8 произвольное)
-	return strings.Map(func(r rune) rune {
+	s = strings.Map(func(r rune) rune {
 		if r < 0x20 {
 			return -1
 		}
 		return r
 	}, s)
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func (c config) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -128,11 +140,8 @@ func (c config) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity := randID()
-	name := sanitizeName(req.Name)
-	if name == "" {
-		name = "Гость"
-	}
+	identity := "anon-" + randHex()
+	name := sanitizeText(req.Name, 40, "Гость")
 
 	canUpdateOwn := true
 	at := auth.NewAccessToken(c.apiKey, c.apiSecret).
@@ -233,5 +242,23 @@ func main() {
 	} else {
 		log.Printf("central auth: OFF (APP_PASSWORD empty — site open)")
 	}
-	log.Fatal(srv.ListenAndServe())
+
+	// graceful shutdown: SIGINT/SIGTERM → влёте запросы получают 5с
+	// дописаться (раньше ListenAndServe рвал их посреди upload/загрузки).
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
+		log.Fatalf("listen: %v", err)
+	case s := <-sig:
+		log.Printf("api: got %s, shutting down…", s)
+	}
+	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer scancel()
+	if err := srv.Shutdown(sctx); err != nil {
+		log.Printf("api shutdown: %v", err)
+	}
+	log.Printf("api: stopped")
 }

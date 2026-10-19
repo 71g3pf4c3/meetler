@@ -82,6 +82,10 @@ func (g *authGate) handle(w http.ResponseWriter, r *http.Request) {
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
 				MaxAge:   int(authTTL.Seconds()),
+				// Secure: cookie уходит только по https. Запрос к нам всегда
+				// приходит через reverse-proxy (nginx) с X-Forwarded-Proto,
+				// поэтому определяем по нему; прямой TLS-терминацией тоже.
+				Secure: isHTTPS(r),
 			})
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -98,6 +102,17 @@ func subtleEqual(a, b string) bool {
 	ha := sha256.Sum256([]byte(a))
 	hb := sha256.Sum256([]byte(b))
 	return hmac.Equal(ha[:], hb[:])
+}
+
+// isHTTPS: запрос пришёл по https (напрямую или за reverse-proxy).
+// Используется для Secure-флага cookie: на http-деве cookie остаётся
+// рабочей, на проде (https) — только по TLS.
+func isHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	// nginx с recommendedProxySettings проксирует X-Forwarded-Proto
+	return r.Header.Get("X-Forwarded-Proto") == "https"
 }
 
 // wrap оборачивает хендлер гейтом: всё под /api/* (кроме /api/auth и /healthz)

@@ -3,15 +3,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mymmrac/telego"
@@ -67,14 +70,35 @@ func loadConfig() config {
 // --- per-chat выбранная палата + обратный индекс палата→чаты ---
 // Обратный индекс нужен для "15с → TG": по имени палаты находим чаты, которые
 // на неё подписаны (командой /palata), и шлём туда голосовое.
+// Персист: если PALATA_STORE_FILE задан, привязки /palata переживают рестарт
+// (JSON {"chatID": "палата"}); пусто — прежнее in-memory поведение.
 type palataStore struct {
 	mu  sync.Mutex
 	m   map[int64]string              // chatID -> палата
 	rev map[string]map[int64]struct{} // палата -> set(chatID)
+	f   string                         // файл персиста; "" = не персистить
 }
 
-func newPalataStore() *palataStore {
-	return &palataStore{m: map[int64]string{}, rev: map[string]map[int64]struct{}{}}
+func newPalataStore(file string) *palataStore {
+	s := &palataStore{m: map[int64]string{}, rev: map[string]map[int64]struct{}{}, f: file}
+	if file == "" {
+		return s
+	}
+	// загрузка: битый/отсутствующий файл — не фатально, начинаем с пустого
+	if b, err := os.ReadFile(file); err == nil {
+		var m map[int64]string
+		if json.Unmarshal(b, &m) == nil {
+			for k, v := range m {
+				s.m[k] = v
+				if s.rev[v] == nil {
+					s.rev[v] = map[int64]struct{}{}
+				}
+				s.rev[v][k] = struct{}{}
+			}
+			log.Printf("palataStore: загружено %d привязок из %s", len(s.m), file)
+		}
+	}
+	return s
 }
 func (s *palataStore) get(key int64, def string) string {
 	s.mu.Lock()
@@ -95,6 +119,22 @@ func (s *palataStore) set(key int64, v string) {
 		s.rev[v] = map[int64]struct{}{}
 	}
 	s.rev[v][key] = struct{}{}
+	s.persistLocked()
+}
+
+// persistLocked: сохранить привязки на диск (вызов только под локом).
+// Best-effort: ошибка записи логируется, память — источник истины.
+func (s *palataStore) persistLocked() {
+	if s.f == "" {
+		return
+	}
+	b, err := json.Marshal(s.m)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(s.f, b, 0o600); err != nil {
+		log.Printf("palataStore: запись %s: %v", s.f, err)
+	}
 }
 
 // chatsFor возвращает чаты, привязанные к палате командой /palata.
@@ -176,6 +216,8 @@ type app struct {
 	// protected — тихие палаты (env PROTECTED_ROOMS): бот в них НЕ публикует
 	// (медиа/TTS/soundboardsave отклоняются понятной ошибкой).
 	protected map[string]bool
+	// httpSrv — внутренний HTTP-сервер (для graceful shutdown).
+	httpSrv *http.Server
 }
 
 const maxConcurrentMedia = 3 // не более 3 медиа-публикаций одновременно
@@ -206,7 +248,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("bot init: %v", err)
 	}
-	ctx := context.Background()
+	// graceful shutdown: SIGINT/SIGTERM отменяет ctx → long polling
+	// останавливается, канал updates закрывается, HTTP-сервер и LiveKit-
+	// коннекты Publisher закрываются ниже после цикла.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	me, err := bot.GetMe(ctx)
 	if err != nil {
 		log.Fatalf("getMe: %v", err)
@@ -231,7 +277,7 @@ func main() {
 		meID:        me.ID,
 		pub:         NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
 		tts:         NewTTS(cfg.piperBin, cfg.piperModel),
-		store:       newPalataStore(),
+		store:       newPalataStore(os.Getenv("PALATA_STORE_FILE")),
 		soundsvcURL: env("SOUNDSVC_URL", "http://host.docker.internal:8080"),
 		mediaSem:    make(chan struct{}, maxConcurrentMedia),
 	}
@@ -245,7 +291,7 @@ func main() {
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
 
 	// HTTP для передачи аудио комнаты из API в Telegram.
-	go a.serveHTTP(env("TGBRIDGE_HTTP_ADDR", ":8090"))
+	a.serveHTTP(env("TGBRIDGE_HTTP_ADDR", ":8090"))
 
 	// allowed_updates Telegram запоминает между вызовами getUpdates (sticky):
 	// явный список страхует от "залипшей" настройки с прошлого запуска/вебхука.
@@ -265,6 +311,19 @@ func main() {
 			go a.chatMember(ctx, u.MyChatMember)
 		}
 	}
+
+	// ctx отменён (SIGINT/SIGTERM) → updates закрылся. Draining:
+	// HTTP даём 5с дописать ответы, LiveKit-коннекты рвём, reaper стопаем.
+	log.Printf("tgbridge: shutting down…")
+	if a.httpSrv != nil {
+		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer scancel()
+		if err := a.httpSrv.Shutdown(sctx); err != nil {
+			log.Printf("http shutdown: %v", err)
+		}
+	}
+	a.pub.Close()
+	log.Printf("tgbridge: stopped")
 }
 
 // chatMember реагирует на добавление бота в группу/канал и на выдачу прав.
@@ -341,32 +400,41 @@ func (a *app) cmdTTS(ctx context.Context, m *telego.Message, arg, palata string)
 	a.reply(ctx, m.Chat.ID, "✓ озвучено в палате "+palata)
 }
 
-// replyMediaFileID извлекает fileID медиа из сообщения-реплая (voice/audio/
-// video/video_note/документ-аудио-видео). Возвращает fileID, длительность,
-// isVideo, предложенное имя файла. Переиспользуется /tovoice и /soundboardsave.
-func replyMediaFileID(rt *telego.Message) (fileID string, dur int, isVideo bool, fname string) {
-	if rt == nil {
+// messageMedia извлекает медиа из сообщения: voice/audio/video/video_note,
+// опционально документ с audio/* или video/* mime (withDocs — только для
+// явных команд /tovoice и /soundboardsave; автовоспроизведение в handle
+// документы НЕ триггерит — осознанно).
+// Одна реализация — раньше этот switch дублировался трижды
+// (replyMediaFileID, cmdToVoice, handle).
+func messageMedia(m *telego.Message, withDocs bool) (fileID string, dur int, isVideo bool, fname string) {
+	if m == nil {
 		return "", 0, false, ""
 	}
 	switch {
-	case rt.Voice != nil:
-		return rt.Voice.FileID, rt.Voice.Duration, false, "voice.ogg"
-	case rt.Audio != nil:
-		return rt.Audio.FileID, rt.Audio.Duration, false, "audio"
-	case rt.VideoNote != nil:
-		return rt.VideoNote.FileID, rt.VideoNote.Duration, true, "note.mp4"
-	case rt.Video != nil:
-		return rt.Video.FileID, rt.Video.Duration, true, "video.mp4"
-	case rt.Document != nil:
-		mt := strings.ToLower(rt.Document.MimeType)
+	case m.Voice != nil:
+		return m.Voice.FileID, m.Voice.Duration, false, "voice.ogg"
+	case m.Audio != nil:
+		return m.Audio.FileID, m.Audio.Duration, false, "audio"
+	case m.VideoNote != nil:
+		return m.VideoNote.FileID, m.VideoNote.Duration, true, "note.mp4"
+	case m.Video != nil:
+		return m.Video.FileID, m.Video.Duration, true, "video.mp4"
+	case m.Document != nil && withDocs:
+		mt := strings.ToLower(m.Document.MimeType)
 		switch {
 		case strings.HasPrefix(mt, "audio/"):
-			return rt.Document.FileID, 0, false, rt.Document.FileName
+			return m.Document.FileID, 0, false, m.Document.FileName
 		case strings.HasPrefix(mt, "video/"):
-			return rt.Document.FileID, 0, true, rt.Document.FileName
+			return m.Document.FileID, 0, true, m.Document.FileName
 		}
 	}
 	return "", 0, false, ""
+}
+
+// replyMediaFileID: медиа из сообщения-реплая (включая документы по mime).
+// Переиспользуется /tovoice и /soundboardsave.
+func replyMediaFileID(rt *telego.Message) (fileID string, dur int, isVideo bool, fname string) {
+	return messageMedia(rt, true)
 }
 
 // cmdSoundboardSave: /soundboardsave в РЕПЛАЕ на сообщение с аудио/видео/
@@ -406,48 +474,32 @@ func (a *app) cmdSoundboardSave(ctx context.Context, m *telego.Message, arg, pal
 // кружок/музыка документом) — проиграть это медиа в палате. Явная команда:
 // в группах не требует @упоминания на исходном сообщении.
 func (a *app) cmdToVoice(ctx context.Context, m *telego.Message, palata string) {
-	rt := m.ReplyToMessage
-	if rt == nil {
+	if m.ReplyToMessage == nil {
 		a.reply(ctx, m.Chat.ID,
 			"Ответь /tovoice на сообщение с голосовым/аудио/видео/музыкой — проиграю его в палате "+palata+".")
 		return
 	}
-	var fileID string
-	var dur int
-	isVideo := false
-	switch {
-	case rt.Voice != nil:
-		fileID, dur = rt.Voice.FileID, rt.Voice.Duration
-	case rt.Audio != nil:
-		fileID, dur = rt.Audio.FileID, rt.Audio.Duration
-	case rt.VideoNote != nil:
-		fileID, dur, isVideo = rt.VideoNote.FileID, rt.VideoNote.Duration, true
-	case rt.Video != nil:
-		fileID, dur, isVideo = rt.Video.FileID, rt.Video.Duration, true
-	case rt.Document != nil:
-		// музыка часто приходит документом (mp3-файлом): берём по mime
-		mt := strings.ToLower(rt.Document.MimeType)
-		switch {
-		case strings.HasPrefix(mt, "audio/"):
-			fileID = rt.Document.FileID
-		case strings.HasPrefix(mt, "video/"):
-			fileID, isVideo = rt.Document.FileID, true
-		}
-	}
+	fileID, dur, isVideo, _ := replyMediaFileID(m.ReplyToMessage)
 	if fileID == "" {
 		a.reply(ctx, m.Chat.ID, "В этом сообщении нет медиа (нужны голосовое/аудио/видео/музыка).")
 		return
 	}
 	// длинное медиа не отклоняем — транскод обрежет до maxPlaySec
-	if dur > maxPlaySec {
-		a.reply(ctx, m.Chat.ID, fmt.Sprintf("Запись %d сек — проиграю первые %d.", dur, maxPlaySec))
-	}
+	a.notifyTruncate(ctx, m.Chat.ID, dur)
 	if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
 		log.Printf("streamFile: %v", err)
 		a.replyErr(ctx, m.Chat.ID, "Не удалось проиграть", err)
 		return
 	}
 	a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
+}
+
+// notifyTruncate: предупреждение, что медиа длиннее потолка и будет обрезано.
+// (Одна реализация — раньше строка дублировалась в cmdToVoice и handle.)
+func (a *app) notifyTruncate(ctx context.Context, chatID int64, dur int) {
+	if dur > maxPlaySec {
+		a.reply(ctx, chatID, fmt.Sprintf("Запись %d сек — проиграю первые %d.", dur, maxPlaySec))
+	}
 }
 
 func (a *app) handle(ctx context.Context, m *telego.Message) {
@@ -490,62 +542,13 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 
 	// --- команды (только чистый текст, без медиа) ---
 	if text != "" && m.Voice == nil && m.Audio == nil && m.Video == nil && m.VideoNote == nil {
-		if cmd, addressee, arg, ok := parseCommand(text); ok {
-			if addressee != "" && addressee != a.me {
-				return // команда адресована другому боту — молча пропускаем
-			}
-			switch strings.ToLower(cmd) {
-			case "start", "help":
-				a.reply(ctx, m.Chat.ID, a.helpText())
-				return
-			case "palata", "room":
-				if arg == "" {
-					a.reply(ctx, m.Chat.ID, "Текущая палата: "+palata)
-					return
-				}
-				if !palataRe.MatchString(arg) {
-					a.reply(ctx, m.Chat.ID, "Неверный номер палаты: только a-z, 0-9, -, _ (до 64 символов).")
-					return
-				}
-				a.store.set(pkey, arg)
-				a.reply(ctx, m.Chat.ID, "Палата запомнена: "+arg)
-				return
-			case "tts":
-				a.cmdTTS(ctx, m, arg, palata)
-				return
-			case "tovoice":
-				a.cmdToVoice(ctx, m, palata)
-				return
-			case "soundboardsave":
-				a.cmdSoundboardSave(ctx, m, arg, palata)
-				return
-			}
-			// неизвестная команда: в личке подскажем, в группе молчим (шумно)
-			if !isGroup {
-				a.reply(ctx, m.Chat.ID, "Не знаю такой команды. /help — справка.")
-				return
-			}
+		if a.handleCommand(ctx, m, text, isGroup, pkey, palata) {
+			return
 		}
 	}
 
-	// --- медиа ---
-	var fileID string
-	var dur int
-	switch {
-	case m.Voice != nil:
-		fileID = m.Voice.FileID
-		dur = m.Voice.Duration
-	case m.Audio != nil:
-		fileID = m.Audio.FileID
-		dur = m.Audio.Duration
-	case m.VideoNote != nil:
-		fileID = m.VideoNote.FileID
-		dur = m.VideoNote.Duration
-	case m.Video != nil:
-		fileID = m.Video.FileID
-		dur = m.Video.Duration
-	}
-
+	// --- медиа (voice/audio/video/кружок; документы — только явным /tovoice) ---
+	fileID, dur, isVideo, _ := messageMedia(m, false)
 	if fileID != "" {
 		// групповой этикет: играем только АДРЕСОВАННОЕ боту медиа —
 		// @упоминание, реплай на сообщение бота или явная #палата в подписи.
@@ -554,10 +557,7 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 			return
 		}
 		// длинное медиа не отклоняем — транскод обрежет до maxPlaySec
-		if dur > maxPlaySec {
-			a.reply(ctx, m.Chat.ID, fmt.Sprintf("Запись %d сек — проиграю первые %d.", dur, maxPlaySec))
-		}
-		isVideo := m.VideoNote != nil || m.Video != nil
+		a.notifyTruncate(ctx, m.Chat.ID, dur)
 		if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
 			log.Printf("streamFile: %v", err)
 			a.replyErr(ctx, m.Chat.ID, "Не удалось проиграть", err)
@@ -601,6 +601,45 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 			a.reply(ctx, m.Chat.ID, "✓ озвучено в палате "+palata)
 		}
 	}
+}
+
+// handleCommand: командный блок handle (вынесен из простыни).
+// Возвращает true, если сообщение полностью обработано (дальше не идём).
+func (a *app) handleCommand(ctx context.Context, m *telego.Message, text string, isGroup bool, pkey int64, palata string) bool {
+	cmd, addressee, arg, ok := parseCommand(text)
+	if !ok {
+		return false
+	}
+	if addressee != "" && addressee != a.me {
+		return true // команда адресована другому боту — молча пропускаем
+	}
+	switch strings.ToLower(cmd) {
+	case "start", "help":
+		a.reply(ctx, m.Chat.ID, a.helpText())
+	case "palata", "room":
+		if arg == "" {
+			a.reply(ctx, m.Chat.ID, "Текущая палата: "+palata)
+			return true
+		}
+		if !palataRe.MatchString(arg) {
+			a.reply(ctx, m.Chat.ID, "Неверный номер палаты: только a-z, 0-9, -, _ (до 64 символов).")
+			return true
+		}
+		a.store.set(pkey, arg)
+		a.reply(ctx, m.Chat.ID, "Палата запомнена: "+arg)
+	case "tts":
+		a.cmdTTS(ctx, m, arg, palata)
+	case "tovoice":
+		a.cmdToVoice(ctx, m, palata)
+	case "soundboardsave":
+		a.cmdSoundboardSave(ctx, m, arg, palata)
+	default:
+		// неизвестная команда: в личке подскажем, в группе молчим (шумно)
+		if !isGroup {
+			a.reply(ctx, m.Chat.ID, "Не знаю такой команды. /help — справка.")
+		}
+	}
+	return true
 }
 
 // cleanText убирает @упоминание бота и #палату из озвучиваемого текста.
