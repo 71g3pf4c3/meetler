@@ -190,6 +190,7 @@
       margin-bottom: 8px; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
     }
     #stats { margin-left: auto; font-size: 11px; color: #4a3b1a; }
+    body.dark #stats { color: #93a1a1; }
 
     #grid {
       display: grid; gap: 6px;
@@ -207,8 +208,11 @@
       position: absolute; left: 0; bottom: 0;
       padding: 1px 6px; font-size: 11px; color: #ffd34d;
       background: rgba(0,0,0,.75); border-top-right-radius: 3px;
-      font-weight: bold;
+      font-weight: bold; z-index: 3; /* выше видео/контролов — ник кликается */
     }
+    /* кликабельный ник ведёт на диагноз МКБ-10 (1 диагноз на участника) */
+    .tile .label a.dxlink { color: #ffd34d; text-decoration: none; cursor: pointer; }
+    .tile .label a.dxlink:hover { text-decoration: underline; color: #fff; }
     /* громкость участника и кик — ПОВЕРХ видео, правый верхний угол
        (absolute позиционируется выше статичного video, поэтому клики
        доходят до органов управления, а не уходят в видеопоток) */
@@ -513,7 +517,8 @@
           <button id="micBtn">Mic: on</button>
           <button id="camBtn">Cam: on</button>
           <button id="shareBtn">Демонстрация</button>
-          <button id="recBtn">Скачать 15с (wav)</button>
+          <button id="recBtn">Скачать 15с (mp3)</button>
+          <button id="tgRecBtn" title="Отправить последние 15с голосовым в Telegram-группу">15с → TG</button>
           <button id="leaveBtn" class="danger">Выписаться</button>
           <span id="stats"></span>
         </div>
@@ -562,12 +567,31 @@
             <div id="welErr"></div>
           </div>
         </details>
+
+        <!-- звук прощания палаты: играет у всех при уходе пациента -->
+        <details class="post" id="farewell">
+          <summary>Звук прощания палаты <span class="cnt-badge">играет при уходе пациента</span></summary>
+          <div class="body">
+            <div class="ctl-row">
+              <button id="farUploadBtn">+ задать свой звук (mp3/ogg/wav, до 2 МБ)</button>
+              <button id="farResetBtn">вернуть дефолтный</button>
+              <button id="farTestBtn">проверить</button>
+            </div>
+            <input type="file" id="farFile" hidden accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
+            <div id="farErr"></div>
+          </div>
+        </details>
       </div>
     </div>
   </div>
 
   <div id="foot">meetler · главврач на обходе · powered by LiveKit · no cookies · no санитары · гойда</div>
 
+  <!-- lamejs: клиентский MP3-энкодер для кнопки "Скачать 15с (mp3)" -->
+  <script src="/vendor/lame.min.js"></script>
   <script type="module" src="/app.js"></script>
+  <!-- декоративная живность (муха/таракан): появляются на 10с в случайные
+       промежутки со звуком. Чистый оверлей, не мешает палате. -->
+  <script src="/critters.js"></script>
 </body>
 </html>

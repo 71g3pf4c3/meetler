@@ -129,7 +129,7 @@ function ensureTile(participant) {
   el.dataset.sid = participant.sid; // по нему вешается аватарка из пула
   const label = document.createElement('div');
   label.className = 'label';
-  label.textContent = participant.name || participant.identity;
+  makeDiagnosisLabel(label, participant.name || participant.identity, participant.identity);
   const ph = document.createElement('div');
   ph.className = 'ph'; // фон = аватарка (из пула или дефолтная из CSS)
   const u = avatarUrlFor(participant.sid);
@@ -137,14 +137,18 @@ function ensureTile(participant) {
   el.appendChild(ph);
   el.appendChild(label);
 
-  // индивидуальная громкость ЭТОГО участника (только у себя)
+  // индивидуальная громкость ЭТОГО участника (только у себя).
+  // max=300: БУСТ до 300% — чужой тайл можно "забустить" громче оригинала.
+  // >100% невозможно через <audio>.volume (капится [0,1]) — идём через
+  // WebAudio GainNode (boostTileVolume): audio-элемент глушим, звук гоним
+  // через gain. ≤100% работает по-старому (дёшево, без WebAudio).
   const vol = document.createElement('input');
   vol.type = 'range';
   vol.min = '0';
-  vol.max = '100';
+  vol.max = '300';
   vol.value = '100';
   vol.className = 'vol';
-  vol.title = 'громкость участника (у себя)';
+  vol.title = 'громкость участника (у себя), до 300% — буст';
   el.appendChild(vol);
 
   // кик — ПО ГОЛОСАМ: нужно VOTE_THRESHOLD разных пациентов. Цвет крестика
@@ -174,27 +178,91 @@ function ensureTile(participant) {
     el, videoEl: null, ph, label, kickBtn: kick,
     identity: participant.identity,
     audioEl: null, audioTrack: null, audioVol: 1,
+    boostCtx: null, boostSrc: null, boostGain: null, // WebAudio граф для >100%
   };
   vol.addEventListener('input', () => {
-    t.audioVol = vol.value / 100;
-    // громкость применяем двумя путями: напрямую к своему <audio>-элементу
-    // и через livekit (setVolume применяет ко всем attached элементам трека)
-    if (t.audioEl) {
-      t.audioEl.volume = t.audioVol;
-      t.audioEl.muted = t.audioVol === 0;
-    }
-    if (t.audioTrack && t.audioTrack.setVolume) {
-      try { t.audioTrack.setVolume(t.audioVol); } catch (_) {}
-    }
+    t.audioVol = vol.value / 100; // 0..3
+    applyTileVolume(t);
   });
   tiles.set(participant.sid, t);
   return t;
 }
 
+// applyTileVolume: индивидуальная громкость ОДНОГО участника (только у себя).
+// ≤100% — обычный путь (<audio>.volume + livekit setVolume).
+// >100% — буст через WebAudio GainNode: <audio> глушим (иначе двойной звук),
+// весь звук гоним через gain с коэффициентом >1 (до 3.0). Юзкейс: у участника
+// тихий микрофон — крутим ЕГО ползунок выше 100%, слышно громче.
+function applyTileVolume(t) {
+  const v = t.audioVol;
+  if (v <= 1) {
+    teardownBoost(t); // вернуться на обычный путь
+    if (t.audioEl) { t.audioEl.volume = v; t.audioEl.muted = v === 0; }
+    if (t.audioTrack && t.audioTrack.setVolume) {
+      try { t.audioTrack.setVolume(v); } catch (_) {}
+    }
+    return;
+  }
+  // буст: нужен живой трек
+  const mst = t.audioTrack && t.audioTrack.mediaStreamTrack;
+  if (!mst) { // трека ещё нет — применим когда attachTrack поставит audioTrack
+    if (t.audioEl) t.audioEl.volume = 1;
+    return;
+  }
+  if (!t.boostCtx) {
+    t.boostCtx = new (window.AudioContext || window.webkitAudioContext)();
+    t.boostSrc = t.boostCtx.createMediaStreamSource(new MediaStream([mst]));
+    t.boostGain = t.boostCtx.createGain();
+    t.boostSrc.connect(t.boostGain);
+    t.boostGain.connect(t.boostCtx.destination);
+  }
+  if (t.boostCtx.state === 'suspended') t.boostCtx.resume().catch(() => {});
+  t.boostGain.gain.value = v; // >1 — усиление (клиппинг на совести кликающего)
+  // исходный <audio> глушим, чтобы не играть дважды (сам поток идёт через gain)
+  if (t.audioEl) { t.audioEl.muted = true; }
+  if (t.audioTrack && t.audioTrack.setVolume) {
+    try { t.audioTrack.setVolume(0); } catch (_) {}
+  }
+}
+
+// teardownBoost: разобрать WebAudio-граф буста и вернуть обычный <audio>.
+function teardownBoost(t) {
+  if (!t.boostCtx) return;
+  try { t.boostSrc.disconnect(); } catch (_) {}
+  try { t.boostGain.disconnect(); } catch (_) {}
+  try { t.boostCtx.close(); } catch (_) {}
+  t.boostCtx = t.boostSrc = t.boostGain = null;
+  if (t.audioEl) t.audioEl.muted = false;
+}
+
 // обновить ник на тайле (name пришёл/изменился после создания тайла)
 function updateTileLabel(participant) {
   const t = tiles.get(participant.sid);
-  if (t) t.label.textContent = participant.name || participant.identity;
+  if (t) makeDiagnosisLabel(t.label, participant.name || participant.identity, participant.identity);
+}
+
+// --- кликабельный ник → диагноз МКБ-10 (1 диагноз на identity, стабильно) ---
+// Индекс диагноза детерминирован по хешу identity: один участник весь визит
+// носит один диагноз. Клик открывает статью Википедии по этому диагнозу.
+function diagnosisFor(key) {
+  return ICD10_F[strHash(key || '') % ICD10_F.length];
+}
+
+// makeDiagnosisLabel рендерит в label кликабельный ник: сам ник + его диагноз.
+// Текст строим безопасно (textContent), ссылка открывается в новой вкладке.
+function makeDiagnosisLabel(label, name, identity) {
+  const [code, dx, wiki] = diagnosisFor(identity);
+  label.textContent = '';
+  const a = document.createElement('a');
+  a.href = 'https://ru.wikipedia.org/wiki/' + encodeURIComponent(wiki);
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.className = 'dxlink';
+  a.title = code + ' — ' + dx + ' (клик — к диагнозу)';
+  a.textContent = name;
+  // клик по нику не должен разворачивать тайл (addMaxControls слушает тайл)
+  a.addEventListener('click', (e) => e.stopPropagation());
+  label.appendChild(a);
 }
 
 function removeTile(participant) {
@@ -228,6 +296,9 @@ function attachTrack(participant, track) {
     }
     t.audioEl = el;
     t.audioTrack = track;
+    // переприменить выбранную громкость (ползунок могли выставить до attach;
+    // буст >100% требует живого mediaStreamTrack, который появился только сейчас)
+    applyTileVolume(t);
     // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
     // Главный рычаг latency на стороне получателя (экономит 50-150ms).
     try {
@@ -407,7 +478,11 @@ function wireRoomEvents(r) {
     // (tgbridge) — это служебный участник, а не живой пациент.
     if (p.identity !== 'tgbridge') playWelcome();
   });
-  r.on(RoomEvent.ParticipantDisconnected, (p) => { removeTile(p); recomputeAvatars(); });
+  r.on(RoomEvent.ParticipantDisconnected, (p) => {
+    removeTile(p);
+    recomputeAvatars();
+    if (p.identity !== 'tgbridge') playFarewell(); // звук прощания (не на служебный мост)
+  });
   r.on(RoomEvent.ParticipantNameChanged, (_name, p) => updateTileLabel(p));
   // данные от других клиентов: сейчас — только «ломаемся» (minecraft-анимация
   // кикнутого тайла у всех зрителей синхронно)
@@ -531,6 +606,20 @@ function playWelcome() {
   welcomeAudio = a;
 }
 
+// звук прощания при уходе участника: кастомный палаты, иначе дефолт /farewell.wav.
+// Симметрично playWelcome. Не играем на уход служебного tgbridge.
+function playFarewell() {
+  if (!room) return;
+  const vol = sbVolume();
+  if (vol <= 0) return;
+  const custom = roomApi(room.name) + '/farewell';
+  const a = new Audio(custom);
+  a.volume = vol;
+  const fallback = () => { const d = new Audio('/farewell.wav'); d.volume = vol; d.play().catch(() => {}); };
+  a.onerror = fallback;
+  a.play().catch(fallback);
+}
+
 // локальный тайл: создаётся СРАЗУ после входа (с аватаркой из пула), видео
 // подменяет фон когда включается. Раньше без камеры своего тайла не было.
 function ensureLocalTile() {
@@ -541,7 +630,7 @@ function ensureLocalTile() {
   const label = document.createElement('div');
   label.className = 'label';
   const myName = (room && room.localParticipant && room.localParticipant.name) || 'Вы';
-  label.textContent = `${myName} (вы)`;
+  makeDiagnosisLabel(label, `${myName} (вы)`, room.localParticipant.identity);
   const ph = document.createElement('div');
   ph.className = 'ph';
   const u = avatarUrlFor(room.localParticipant.sid);
@@ -683,11 +772,77 @@ async function loadBuffer(url) {
   return buf;
 }
 
+// --- soundboard DDoS + anti-DDoS ---
+// Быстрые клики по звуку (бёрст в окне BURST_WINDOW_MS) ПОВЫШАЮТ громкость,
+// с которой звук льётся ВСЕМ в палате: ×BURST_STEP за клик (накопительно, пока
+// бёрст не остыл). Это «DDoS» — спамом можно разогнать звук для всех.
+// Anti-DDoS: каждый клик в бёрсте после BURST_SAFE — мина с шансом MINE_CHANCE:
+// сработала → кликающий сам улетает в тюрьму (self-kick) И звук удаляется
+// (им больше нельзя пользоваться). Наказывается ТОЛЬКО сам спамер.
+const BURST_WINDOW_MS = 1500; // окно бёрста
+const BURST_STEP = 1.1;       // ×1.1 громкости в палату за клик в бёрсте
+const BURST_SAFE = 20;        // до стольких кликов — без мин
+const MINE_CHANCE = 0.10;     // 10% шанс self-kick на клик после BURST_SAFE
+const burst = new Map();      // sound.id -> { n, last } счётчик бёрста по звуку
+
+// gainForBurst: во сколько раз громче лить звук в палату при текущем бёрсте.
+function gainForBurst(id) {
+  const b = burst.get(id);
+  if (!b) return 1;
+  if (Date.now() - b.last > BURST_WINDOW_MS) { burst.delete(id); return 1; } // остыл
+  return Math.pow(BURST_STEP, b.n); // n кликов → ×1.1^n
+}
+
+// onSfxClick: инкремент бёрста + проверка мины + воспроизведение.
+// Счётчик живёт в localStorage НЕ нужен — наказание = self-kick, перезагрузка
+// как «поблажка» допустима (стейт только в памяти вкладки).
+function onSfxClick(s, btnEl) {
+  const now = Date.now();
+  const b = burst.get(s.id);
+  if (b && now - b.last <= BURST_WINDOW_MS) {
+    b.n += 1; b.last = now;
+  } else {
+    burst.set(s.id, { n: 1, last: now });
+  }
+  const n = burst.get(s.id).n;
+  // мина: после BURST_SAFE кликов каждый клик с шансом MINE_CHANCE — self-kick
+  if (n > BURST_SAFE && Math.random() < MINE_CHANCE) {
+    triggerMine(s);
+    return; // звук уже не играем — пациент выписан
+  }
+  playUrlToRoom(s.url, btnEl, s.id);
+}
+
+// triggerMine: пациент доигрался. Удаляем сам звук (чтобы им нельзя было
+// пользоваться) и выписываем самого кликающего (self-kick → /jail.html).
+async function triggerMine(s) {
+  if (!room) return;
+  const sbErr = $('sbErr');
+  if (sbErr) sbErr.textContent = '💥 мина: доигрался со спамом — выписка';
+  // удалить звук с сервера (vote-bypass оправдан: это саморазрушение, не griefing)
+  try {
+    await fetch(roomApi(room.name) + '/sounds/' + encodeURIComponent(s.id), { method: 'DELETE' });
+    broadcastSfxUpdate();
+  } catch (_) {}
+  burst.delete(s.id);
+  // self-kick: сервер выписывает САМОГО кликающего по его identity
+  try {
+    await fetch('/api/kick', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: room.name, identity: room.localParticipant.identity }),
+    });
+  } catch (_) {}
+  // Disconnected(PARTICIPANT_REMOVED) сам уведёт на /jail.html; подстрахуемся
+  setTimeout(() => { if (location.pathname !== '/jail.html') location.href = '/jail.html'; }, 1500);
+}
+
 // проигрывает url: публикует в палату (слышат все) + локально + в запись 15с.
 // Жёсткий кэп 15с — как и всё проигрываемое в tgbridge.
 // Локальный монитор идёт через gain: индивидуальный ползунок громкости
 // меняет громкость ТОЛЬКО у себя (в палату и в запись — как было).
-async function playUrlToRoom(url, btnEl) {
+// burstId — ключ звука: громкость В ПАЛАТУ масштабируется по бёрсту (DDoS).
+async function playUrlToRoom(url, btnEl, burstId) {
   if (!room || sfxBusy) return;
   sfxBusy = true;
   if (btnEl) btnEl.classList.add('playing');
@@ -699,7 +854,11 @@ async function playUrlToRoom(url, btnEl) {
     const src = sfxCtx.createBufferSource();
     src.buffer = buffer;
     const dest = sfxCtx.createMediaStreamDestination();
-    src.connect(dest);               // в палату
+    // громкость В ПАЛАТУ масштабируется бёрстом (спам кликов → громче всем)
+    const roomGain = sfxCtx.createGain();
+    roomGain.gain.value = burstId ? gainForBurst(burstId) : 1;
+    src.connect(roomGain);
+    roomGain.connect(dest);          // в палату (через бёрст-усиление)
     const monitor = sfxCtx.createGain();
     monitor.gain.value = sbVolume(); // индивидуальная громкость (у себя)
     sfxMonitorGain = monitor;        // чтобы ползунок менял её НА ЛЕТУ
@@ -770,7 +929,7 @@ async function refreshSoundboard() {
       b.className = 'sfx';
       b.textContent = s.label;
       b.title = s.label;
-      b.onclick = () => playUrlToRoom(s.url, b);
+      b.onclick = () => onSfxClick(s, b);
       const del = document.createElement('button');
       del.className = 'sfxdel';
       del.textContent = '✕';
@@ -1083,13 +1242,14 @@ function strHash(s) {
 const DEFAULT_AVATARS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `/dav/${n}.png`);
 
 // Веса раздачи аватарок (детерминированно по hash(sid), одинаково у всех):
-//   - дефолтные — ПРИОРИТЕТНЕЕ (высокий вес), выпадают чаще;
-//   - загруженные — реже, и КАЖДАЯ НОВАЯ ещё реже (вес убывает по порядку).
-// Чем больше портретов в палате — тем ниже шанс конкретного (total растёт).
-const DEFAULT_WEIGHT = 3;
-// вес загруженного портрета: убывает по порядку (каждая новая реже) И по
-// лайкам (чем больше лайков — тем реже выдаётся). likes≥0.
-function uploadedWeight(i, likes) { return DEFAULT_WEIGHT / (i + 2) / (1 + (likes || 0)); }
+//   - ЗАГРУЖЕННЫЕ портреты — ПРИОРИТЕТНЕЕ (высокий вес), выпадают часто;
+//   - дефолтные — fallback, низкий вес (нужны только пока галерея пустая).
+// Чем больше лайков — тем реже портрет выдаётся (эксклюзив).
+const DEFAULT_WEIGHT = 0.5; // дефолты теперь редкие — лишь бы было что показать
+const UPLOADED_BASE = 10;   // загруженные выпадают ЧАСТО
+// вес загруженного портрета: высокий базовый, слабо убывает по порядку (чтобы
+// старые не доминировали) и по лайкам (чем больше лайков — тем реже). likes≥0.
+function uploadedWeight(i, likes) { return UPLOADED_BASE / (1 + i * 0.15) / (1 + (likes || 0) * 0.5); }
 
 // buildAvatarPool: [{url, weight, rarity}] — дефолты + загруженные (по порядку id).
 function buildAvatarPool() {
@@ -1109,19 +1269,18 @@ function rarityTier(p) {
   return 4;                 // legendary (самые редкие)
 }
 
-// --- БЕЗ ПОВТОРОВ: каждому участнику — уникальная аватарка, пока их хватает.
-// Повтор начинается только когда юзеров БОЛЬШЕ, чем аватарок в пуле.
-// Назначение — чистая функция от (отсортированный список sid, пул): все
-// зрители считают одинаково, без сигналинга. Дефолты имеют наибольший вес →
-// выше шанс, что их займут (в т.ч. первыми).
-let avatarAssign = new Map(); // sid -> url (кэш текущего назначения)
-
-function allSids() {
-  const s = [];
-  if (room && room.localParticipant) s.push(room.localParticipant.sid);
-  if (room && room.remoteParticipants) room.remoteParticipants.forEach((p) => s.push(p.sid));
-  return s;
-}
+// --- СТАБИЛЬНАЯ аватарка на участника ---
+// Было: назначение считалось от ВСЕГО ростера (allSids) со splice-удалением
+//   занятых из пула + пересчёт на каждый connect/disconnect/like/timer. Любой
+//   вход/выход/лайк менял order → у УЖЕ сидящих аватарка переназначалась
+//   («перетасовка в случайные промежутки» = детерминированный пересчёт при
+//   каждом событии ростера/пула).
+// Стало: аватарка = чистая функция ТОЛЬКО от sid + стабильного пула (hash(sid)
+//   взвешенно по пулу). Ростер на выбор не влияет. Результат кэшируется per-sid
+//   и НЕ переназначается, пока у sid остаётся валидная (ещё существующая в пуле)
+//   картинка. Trade-off: при малом пуле двое могут получить одну картинку —
+//   это приемлемо против постоянной перетасовки.
+let avatarAssign = new Map(); // sid -> url (стабильный кэш)
 
 // взвешенный выбор индекса среди arr по доле хеша sid
 function weightedPickIndex(arr, sid) {
@@ -1134,37 +1293,28 @@ function weightedPickIndex(arr, sid) {
   return arr.length - 1;
 }
 
-// assignAvatars: детерминированное назначение без повторов (пока пул не исчерпан).
-function assignAvatars() {
-  const map = new Map();
-  const { pool } = buildAvatarPool();
-  if (!pool.length) return map;
-  // порядок обработки — по хешу sid (детерминированно, не зависит от порядка входа)
-  const order = allSids().sort((a, b) => (strHash(a) - strHash(b)) || (a < b ? -1 : 1));
-  let remaining = pool.slice();
-  for (const sid of order) {
-    if (!remaining.length) remaining = pool.slice(); // пул кончился → новый круг (юзеров > аватарок)
-    const idx = weightedPickIndex(remaining, sid);
-    map.set(sid, remaining[idx].url);
-    remaining.splice(idx, 1);
-  }
-  return map;
-}
-
-// пересчитать назначение и перекрасить все тайлы (на вход/выход/смену пула)
+// recomputeAvatars: НЕ трогает уже назначенные sid, пока их картинка жива в
+// пуле. Переназначает только тех, у кого картинка исчезла (портрет удалили).
+// Вход/выход других участников больше НЕ вызывает перетасовку.
 function recomputeAvatars() {
-  avatarAssign = assignAvatars();
+  const { pool } = buildAvatarPool();
+  const urls = new Set(pool.map((e) => e.url));
+  // выкинуть из кэша только протухшие назначения (картинку удалили из палаты)
+  for (const [sid, url] of avatarAssign) {
+    if (!urls.has(url)) avatarAssign.delete(sid);
+  }
   document.querySelectorAll('.tile .ph').forEach(applyAvatarToPh);
 }
 
 function avatarUrlFor(sid) {
-  if (avatarAssign.has(sid)) return avatarAssign.get(sid);
-  // кэш не содержит sid (тайл создаётся до пересчёта) — посчитаем на лету
-  avatarAssign = assignAvatars();
-  if (avatarAssign.has(sid)) return avatarAssign.get(sid);
-  // sid вне ростера (напр. предпросмотр) — одиночный взвешенный выбор
+  const cached = avatarAssign.get(sid);
+  if (cached) return cached;
   const { pool } = buildAvatarPool();
-  return pool.length ? pool[weightedPickIndex(pool, sid)].url : null;
+  if (!pool.length) return null;
+  // детерминированный взвешенный выбор строго по sid — не зависит от ростера
+  const url = pool[weightedPickIndex(pool, sid)].url;
+  avatarAssign.set(sid, url);
+  return url;
 }
 
 // rarityForId: тир раритетности загруженного портрета (для палитры в галерее)
@@ -1198,9 +1348,19 @@ $('avatarFile').onchange = async () => {
     if (!/\.(jpe?g|png|gif|webp)$/i.test(f.name)) {
       throw new Error('разрешены jpg/png/gif/webp');
     }
-    // ужимаем по разрешению и кодеку: downscale ≤256px + webp (fallback jpeg).
-    // Экономит трафик/диск и нормализует формат (сервер хранит как есть).
-    const { blob, ext } = await compressImage(f, 256, 0.82);
+    // GIF (и анимированный webp) НЕ прогоняем через canvas: toBlob берёт один
+    // кадр и убивает анимацию. Такие льём как есть (размер уже проверен ≤4 МБ).
+    // Остальное ужимаем: downscale ≤256px + webp (fallback jpeg) — экономит
+    // трафик/диск и нормализует формат.
+    const isAnimated = f.type === 'image/gif' || /\.gif$/i.test(f.name) ||
+      (f.type === 'image/webp' && await webpIsAnimated(f));
+    let blob, ext;
+    if (isAnimated) {
+      blob = f;
+      ext = /\.webp$/i.test(f.name) || f.type === 'image/webp' ? 'webp' : 'gif';
+    } else {
+      ({ blob, ext } = await compressImage(f, 256, 0.82));
+    }
     const fd = new FormData();
     fd.append('file', blob, 'avatar.' + ext);
     const res = await fetch(roomApi(rm) + '/avatars', { method: 'POST', body: fd });
@@ -1210,6 +1370,21 @@ $('avatarFile').onchange = async () => {
     if (avErr) avErr.textContent = 'Загрузка не удалась: ' + (e.message || e);
   }
 };
+
+// webpIsAnimated: анимированный webp содержит VP8X с ANIM-флагом и 'ANIM'-чанк.
+// Читаем первые ~64 байта и ищем сигнатуру 'ANIM' — дёшево и достаточно.
+async function webpIsAnimated(file) {
+  try {
+    const head = new Uint8Array(await file.slice(0, 64).arrayBuffer());
+    // ищем ASCII 'ANIM' (0x41 0x4E 0x49 0x4D) в заголовке
+    for (let i = 0; i + 3 < head.length; i++) {
+      if (head[i] === 0x41 && head[i + 1] === 0x4E && head[i + 2] === 0x49 && head[i + 3] === 0x4D) {
+        return true;
+      }
+    }
+  } catch (_) {}
+  return false;
+}
 
 // compressImage: downscale до maxDim (по длинной стороне) и перекодирование.
 // webp если поддерживается браузером, иначе jpeg. Возвращает {blob, ext}.
@@ -1275,6 +1450,36 @@ $('welResetBtn').onclick = async () => {
   } catch (_) {}
 };
 $('welTestBtn').onclick = () => playWelcome();
+
+// --- звук прощания палаты: кастомизация (симметрично welcome) ---
+$('farUploadBtn').onclick = () => $('farFile').click();
+$('farFile').onchange = async () => {
+  const f = $('farFile').files[0];
+  $('farFile').value = '';
+  const e = $('farErr');
+  if (e) e.textContent = '';
+  if (!f || !room) return;
+  try {
+    if (f.size > 2 * 1024 * 1024) throw new Error('больше 2 МБ');
+    if (!/\.(mp3|ogg|oga|wav|m4a|webm|opus)$/i.test(f.name)) throw new Error('разрешены mp3/ogg/wav/m4a/webm/opus');
+    const fd = new FormData();
+    fd.append('file', f);
+    const res = await fetch(roomApi(room.name) + '/farewell', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.text()) || res.status);
+    if (e) e.textContent = 'звук прощания обновлён';
+  } catch (err) {
+    if (e) e.textContent = 'Не удалось: ' + (err.message || err);
+  }
+};
+$('farResetBtn').onclick = async () => {
+  if (!room) return;
+  const e = $('farErr');
+  try {
+    await fetch(roomApi(room.name) + '/farewell', { method: 'DELETE' });
+    if (e) e.textContent = 'вернули дефолтный';
+  } catch (_) {}
+};
+$('farTestBtn').onclick = () => playFarewell();
 
 // --- тумблер темы (светлая / Solarized dark), запоминается в localStorage ---
 function applyTheme(t) {
@@ -1467,26 +1672,74 @@ function encodeWav(samples, sampleRate) {
   return new Blob([buf], { type: 'audio/wav' });
 }
 
-$('recBtn').onclick = () => {
-  if (!recCtx || recFilled === 0) {
-    $('err').textContent = 'Пока нечего скачивать (запись ещё копится).';
-    return;
-  }
-  // собрать линейный хвост из кольцевого буфера (последние recFilled сэмплов)
+// собрать линейный хвост (последние recFilled сэмплов) из кольцевого буфера
+function collectRecTail() {
+  if (!recCtx || recFilled === 0) return null;
   const out = new Float32Array(recFilled);
   const start = (recWritePos - recFilled + recRingSize) % recRingSize;
   for (let i = 0; i < recFilled; i++) out[i] = recRing[(start + i) % recRingSize];
+  return out;
+}
 
-  const blob = encodeWav(out, recSampleRate);
+// encodeMp3: Float32 PCM mono -> mp3 (lamejs). Блокирует на ~десятки мс для 15с —
+// приемлемо (разовая кнопка). lamejs грузится глобально (web/vendor/lame.min.js).
+function encodeMp3(samples, sampleRate) {
+  const enc = new lamejs.Mp3Encoder(1, sampleRate, 128); // mono, 128kbps
+  const pcm = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  const out = [];
+  const block = 1152;
+  for (let i = 0; i < pcm.length; i += block) {
+    const buf = enc.encodeBuffer(pcm.subarray(i, i + block));
+    if (buf.length) out.push(buf);
+  }
+  const end = enc.flush();
+  if (end.length) out.push(end);
+  return new Blob(out, { type: 'audio/mpeg' });
+}
+
+$('recBtn').onclick = () => {
+  const out = collectRecTail();
+  if (!out) { $('err').textContent = 'Пока нечего скачивать (запись ещё копится).'; return; }
+  const blob = encodeMp3(out, recSampleRate);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   a.href = url;
-  a.download = `meetler-${ts}.wav`;
+  a.download = `meetler-${ts}.mp3`;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+};
+
+// "15с → TG": последние 15с микса уходят голосовым в Telegram-группу.
+// Браузер шлёт WAV (точная обрезка без энкодера) в token-svc → tgbridge
+// транскодит в ogg/opus и постит SendVoice в чат, привязанный к этой палате.
+const tgRecBtn = $('tgRecBtn');
+if (tgRecBtn) tgRecBtn.onclick = async () => {
+  if (!room) return;
+  const out = collectRecTail();
+  if (!out) { $('err').textContent = 'Пока нечего отправлять (запись ещё копится).'; return; }
+  tgRecBtn.disabled = true;
+  const prev = tgRecBtn.textContent;
+  tgRecBtn.textContent = 'отправляю…';
+  try {
+    const blob = encodeWav(out, recSampleRate); // WAV: точная обрезка, tgbridge сам перекодит
+    const fd = new FormData();
+    fd.append('file', blob, 'mix.wav');
+    const res = await fetch(roomApi(room.name) + '/tg-voice', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.text()) || res.status);
+    tgRecBtn.textContent = '✓ ушло в TG';
+  } catch (e) {
+    $('err').textContent = 'В TG не ушло: ' + (e.message || e);
+    tgRecBtn.textContent = prev;
+  } finally {
+    setTimeout(() => { tgRecBtn.textContent = prev; tgRecBtn.disabled = false; }, 2500);
+  }
 };
 
 // свой уход: помечаем, чтобы Disconnected не показал "вас выписали"
