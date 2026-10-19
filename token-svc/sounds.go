@@ -275,6 +275,25 @@ func (sb *soundboard) remove(w http.ResponseWriter, _ *http.Request, room, id st
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// delete удаляет файл звука палаты (+.meta). Внутренний метод, переиспользуется
+// голосованием (votes.go). Нет файла → не ошибка (идемпотентно).
+func (sb *soundboard) delete(room, id string) error {
+	if id == "" || id != filepath.Base(id) {
+		return os.ErrInvalid
+	}
+	if _, ok := soundExt[strings.ToLower(filepath.Ext(id))]; !ok {
+		return os.ErrInvalid
+	}
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	err := os.Remove(filepath.Join(sb.dir(room), id))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_ = os.Remove(filepath.Join(sb.dir(room), id+".meta"))
+	return nil
+}
+
 // dispatch роутит /api/rooms/<room>/sounds[/<id>] по методу.
 func (sb *soundboard) dispatch(w http.ResponseWriter, r *http.Request, room string, rest []string) {
 	if len(rest) == 0 {

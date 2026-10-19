@@ -238,6 +238,24 @@ func (as *avatarStore) remove(w http.ResponseWriter, _ *http.Request, room, id s
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// delete удаляет файл портрета палаты. Внутренний метод, переиспользуется
+// голосованием (votes.go). Нет файла → не ошибка (идемпотентно).
+func (as *avatarStore) delete(room, id string) error {
+	if id == "" || id != filepath.Base(id) {
+		return os.ErrInvalid
+	}
+	if _, ok := avatarExt[strings.ToLower(filepath.Ext(id))]; !ok {
+		return os.ErrInvalid
+	}
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	err := os.Remove(filepath.Join(as.dir(room), id))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // dispatch роутит /api/rooms/<room>/avatars[/<id>] по методу.
 func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, room string, rest []string) {
 	if len(rest) == 0 {

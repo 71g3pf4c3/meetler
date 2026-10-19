@@ -307,7 +307,12 @@ in
           "ROOMS_DIR=/var/lib/meetler/rooms"
         ];
         DynamicUser = true;
-        StateDirectory = "meetler";
+        # systemd создаёт И чистит владение на КАЖДОМ старте под текущий
+        # DynamicUser UID. Явно даём rooms-подкаталог, иначе при смене UID
+        # между версиями /var/lib/meetler/rooms оставался чужим → MkdirAll
+        # падал с EACCES и token-svc писал "room storage disabled".
+        StateDirectory = "meetler meetler/rooms";
+        StateDirectoryMode = "0700";
         Restart = "on-failure";
         RestartSec = "2s";
         # hardening

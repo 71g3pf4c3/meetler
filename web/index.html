@@ -215,9 +215,89 @@
       max-width: 1000px; margin: 10px auto; padding: 6px 8px;
       font-size: 10px; color: #777; border-top: 1px solid #ccc; text-align: center;
     }
+
+    /* --- прогресс голосов за деструктив: 1 жёлтый, 2 оранжевый, 3 красный ---
+       плюс бейдж "N/3" из data-votes на кнопке-крестике */
+    .kick.v1, .sfxdel.v1, #avatarThumbs .thumb button.v1 { background: #ffe08a !important; border-color: #b8860b !important; color: #6b5200 !important; }
+    .kick.v2, .sfxdel.v2, #avatarThumbs .thumb button.v2 { background: #ffb36b !important; border-color: #c05a00 !important; color: #6b2e00 !important; }
+    .kick.v3, .sfxdel.v3, #avatarThumbs .thumb button.v3 { background: #e23b3b !important; border-color: #900 !important; color: #fff !important; }
+    .kick[data-votes]::after, .sfxdel[data-votes]::after {
+      content: attr(data-votes);
+      position: absolute; bottom: 100%; right: 0;
+      font-size: 9px; background: #000; color: #ffd34d; padding: 0 3px;
+      border-radius: 2px; white-space: nowrap; pointer-events: none;
+    }
+    .tile .kick { position: absolute; } /* already; ensure ::after anchors */
+    .sfxrow { position: relative; }
+
+    /* --- minecraft block-break: трещины + разлёт тайла --- */
+    .tile.breaking { animation: mcShake .12s steps(2) 6; }
+    .tile.breaking .crack {
+      position: absolute; inset: 0; z-index: 5; pointer-events: none;
+      background-image:
+        linear-gradient(45deg, transparent 46%, rgba(0,0,0,.85) 47%, rgba(0,0,0,.85) 53%, transparent 54%),
+        linear-gradient(-45deg, transparent 43%, rgba(0,0,0,.75) 44%, rgba(0,0,0,.75) 48%, transparent 49%),
+        linear-gradient(10deg, transparent 60%, rgba(0,0,0,.7) 61%, rgba(0,0,0,.7) 64%, transparent 65%);
+      background-size: cover; opacity: 0;
+      animation: mcCracks .72s steps(4) forwards;
+    }
+    .tile.breaking {
+      animation: mcShake .1s steps(2) 4, mcBurst .3s ease-in .6s forwards;
+    }
+    @keyframes mcShake {
+      0% { transform: translate(0,0); } 25% { transform: translate(-2px,1px); }
+      50% { transform: translate(2px,-1px); } 75% { transform: translate(-1px,-2px); }
+      100% { transform: translate(0,0); }
+    }
+    @keyframes mcCracks { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes mcBurst {
+      to { transform: scale(1.15) rotate(3deg); opacity: 0; filter: blur(2px); }
+    }
+
+    /* --- тумблер темы --- */
+    #themeToggle {
+      position: fixed; top: 6px; right: 8px; z-index: 50;
+      font-size: 11px; padding: 2px 8px; cursor: pointer;
+      background: #ece9d8; border: 1px solid #8a8a8a;
+    }
+
+    /* ======================= ТЁМНАЯ ТЕМА (Solarized Dark) =======================
+       base03 #002b36 base02 #073642 base01 #586e75 base00 #657b83
+       base0 #839496 base1 #93a1a1 yellow #b58900 orange #cb4b16 red #dc322f
+       blue #268bd2 cyan #2aa198 green #859900 */
+    body.dark { background: #002b36; color: #93a1a1; }
+    body.dark a { color: #268bd2; }
+    body.dark #masthead { background: linear-gradient(#073642, #002b36); border-bottom-color: #001f27; }
+    body.dark #masthead:visited, body.dark #masthead:active { color: #93a1a1; }
+    body.dark #masthead .logo b { color: #b58900; }
+    body.dark #masthead .slogan { color: #586e75; }
+    body.dark .navbar { background: #073642; border-color: #001f27; color: #93a1a1; }
+    body.dark .navbar b { color: #cb4b16; }
+    body.dark table.forum { background: #073642; border-color: #002b36; }
+    body.dark table.forum th { background: #0b3a47; color: #93a1a1; border-color: #002b36; }
+    body.dark table.forum td { background: #002b36; border-color: #073642; color: #93a1a1; }
+    body.dark table.forum tr:nth-child(even) td { background: #022d38; }
+    body.dark td.label-cell { background: #073642 !important; color: #93a1a1; }
+    body.dark input.f { background: #002b36; color: #93a1a1; border-color: #586e75; }
+    body.dark button { background: #073642; color: #93a1a1; border-color: #586e75; border-top-color: #657b83; border-left-color: #657b83; }
+    body.dark button.primary { background: #0b4a2f; color: #b5e8a0; }
+    body.dark button.danger { background: #5a1a1a; color: #ffb3b3; }
+    body.dark button.sfx { background: #4a3a00; color: #ffd34d; border-color: #b58900 #7a5a08 #7a5a08 #b58900; }
+    body.dark #wardNav, body.dark #stageMain table.forum { background: #073642; border-color: #002b36; }
+    body.dark #wardNav .wnav-head { background: #0b3a47; }
+    body.dark .wnav-item { color: #268bd2; border-bottom-color: #022d38; }
+    body.dark .wnav-item:hover { background: #022d38; }
+    body.dark .wnav-item.current { background: #0b3a47; color: #b58900; }
+    body.dark #wardNav .wnav-new { background: #002b36; border-top-color: #002b36; color: #268bd2; }
+    body.dark .tile { background: #001f27; border-color: #586e75; }
+    body.dark .tile .ph { background-color: #073642; }
+    body.dark #themeToggle { background: #073642; color: #93a1a1; border-color: #586e75; }
+    body.dark #foot { color: #586e75; border-top-color: #073642; }
+    body.dark #bar { background: #073642; border-color: #002b36; }
   </style>
 </head>
 <body>
+  <button id="themeToggle" title="Переключить тему (светлая / Solarized dark)">🌓 тема</button>
   <a id="masthead" href="/" title="Вернуться в приёмное отделение">
     <img class="logoimg" src="/logo.png" alt="meetler" />
     <div>
@@ -253,24 +333,6 @@
           <td>
             <button id="joinBtn" class="primary">» Поступить »</button>
             <div id="err"></div>
-          </td>
-        </tr>
-      </table>
-
-      <!-- пул аватарок ПАЛАТЫ: каждому пациенту — случайный портрет её галереи -->
-      <table class="forum" id="avatars">
-        <tr><th colspan="2">Галерея портретов палаты</th></tr>
-        <tr>
-          <td class="label-cell">В галерее:</td>
-          <td>
-            <span class="cnt" id="avatarCount">0</span> портретов этой палаты —
-            каждому пациенту достаётся случайный при поступлении.
-            Портреты у каждой палаты свои: укажи палату выше, чтобы принести свой.
-            <button id="avatarUploadBtn">+ принести портрет (jpg/png/gif/webp, до 4 МБ)</button>
-            <input type="file" id="avatarFile" hidden
-                   accept=".jpg,.jpeg,.png,.gif,.webp" />
-            <div id="avatarThumbs"></div>
-            <div id="avatarErr"></div>
           </td>
         </tr>
       </table>
@@ -323,6 +385,37 @@
               <input type="file" id="sbFile" hidden
                      accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
               <div id="sbErr"></div>
+            </td>
+          </tr>
+        </table>
+
+        <!-- галерея портретов ПАЛАТЫ (переехала с главной): каждому пациенту
+             достаётся случайный портрет; удаление — по 3 голосам -->
+        <table class="forum" id="avatars">
+          <tr><th>Галерея портретов палаты</th></tr>
+          <tr>
+            <td>
+              <span class="cnt" id="avatarCount">0</span> портретов —
+              каждому пациенту достаётся случайный. Удалить можно голосованием (нужно 3).
+              <button id="avatarUploadBtn">+ принести портрет (jpg/png/gif/webp, до 4 МБ)</button>
+              <input type="file" id="avatarFile" hidden accept=".jpg,.jpeg,.png,.gif,.webp" />
+              <div id="avatarThumbs"></div>
+              <div id="avatarErr"></div>
+            </td>
+          </tr>
+        </table>
+
+        <!-- звук приветствия палаты: играет у всех при входе пациента -->
+        <table class="forum" id="welcome">
+          <tr><th>Звук приветствия палаты — играет при входе пациента</th></tr>
+          <tr>
+            <td>
+              <button id="welUploadBtn">+ задать свой звук (mp3/ogg/wav, до 2 МБ)</button>
+              <button id="welResetBtn">вернуть дефолтный</button>
+              <button id="welTestBtn">проверить</button>
+              <input type="file" id="welFile" hidden
+                     accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
+              <div id="welErr"></div>
             </td>
           </tr>
         </table>

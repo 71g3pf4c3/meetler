@@ -44,6 +44,7 @@ type roomService struct {
 	root   string // ROOMS_DIR
 	sb     *soundboard
 	av     *avatarStore
+	votes  *voteStore
 	ok     bool // root доступен; иначе /api/rooms* → 503 (токены и кик работают)
 }
 
@@ -51,14 +52,45 @@ func newRoomService(lkURL, apiKey, apiSecret, root string) *roomService {
 	if root == "" {
 		root = "/data/rooms"
 	}
+	client := lksdk.NewRoomServiceClient(lkURL, apiKey, apiSecret)
+	// основной путь. Если не создаётся (права на volume/StateDirectory) —
+	// логируем ТОЧНУЮ ошибку и пробуем fallback во временный каталог, чтобы
+	// фича работала (эфемерно) вместо полного 503. Это чинит прод-симптом
+	// "room storage disabled", когда /var/lib/meetler/rooms недоступен.
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		log.Printf("WARNING: ROOMS_DIR %q unavailable: %v", root, err)
+		fallback := filepath.Join(os.TempDir(), "meetler-rooms")
+		if err2 := os.MkdirAll(fallback, 0o755); err2 == nil {
+			log.Printf("WARNING: using EPHEMERAL fallback %q (палаты не переживут рестарт — почини права на %q)", fallback, root)
+			root = fallback
+		} else {
+			log.Printf("ERROR: fallback %q тоже недоступен: %v — хранилище отключено", fallback, err2)
+		}
+	}
 	rs := &roomService{
-		client: lksdk.NewRoomServiceClient(lkURL, apiKey, apiSecret),
+		client: client,
 		root:   root,
 		sb:     &soundboard{root: root},
 		av:     &avatarStore{root: root},
 	}
-	rs.ok = os.MkdirAll(root, 0o755) == nil
+	rs.ok = dirWritable(root)
+	rs.votes = newVoteStore(rs)
 	return rs
+}
+
+// dirWritable: каталог существует и в него реально можно писать (а не только
+// MkdirAll прошёл). Ловит кейсы root-owned volume под nonroot-процессом.
+func dirWritable(dir string) bool {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return false
+	}
+	probe := filepath.Join(dir, ".wtest")
+	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
+		log.Printf("WARNING: %q не доступен на запись: %v", dir, err)
+		return false
+	}
+	_ = os.Remove(probe)
+	return true
 }
 
 func (rs *roomService) roomDir(room string) string { return filepath.Join(rs.root, room) }
@@ -234,6 +266,10 @@ func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) 
 		rs.sb.dispatch(w, r, room, parts[2:])
 	case avatarsSub:
 		rs.av.dispatch(w, r, room, parts[2:])
+	case "votes":
+		rs.votes.dispatch(w, r, room, parts[2:])
+	case "welcome":
+		rs.sb.welcomeDispatch(w, r, room, parts[2:])
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}

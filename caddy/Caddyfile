@@ -19,7 +19,7 @@
 	}
 
 	# vendor/ассеты — immutable, долгий кэш (livekit-client, logo, avatar, mp3).
-	@assets path /vendor/* /logo.png /avatar.jpg /dav/*
+	@assets path /vendor/* /logo.png /avatar.jpg /dav/* /welcome.mp3 /priem.jpg /jail.jpg
 	handle @assets {
 		header Cache-Control "public, max-age=31536000, immutable"
 		root * /srv/web
