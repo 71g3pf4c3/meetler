@@ -3,15 +3,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mymmrac/telego"
@@ -67,14 +70,35 @@ func loadConfig() config {
 // --- per-chat выбранная палата + обратный индекс палата→чаты ---
 // Обратный индекс нужен для "15с → TG": по имени палаты находим чаты, которые
 // на неё подписаны (командой /palata), и шлём туда голосовое.
+// Персист: если PALATA_STORE_FILE задан, привязки /palata переживают рестарт
+// (JSON {"chatID": "палата"}); пусто — прежнее in-memory поведение.
 type palataStore struct {
 	mu  sync.Mutex
 	m   map[int64]string              // chatID -> палата
 	rev map[string]map[int64]struct{} // палата -> set(chatID)
+	f   string                         // файл персиста; "" = не персистить
 }
 
-func newPalataStore() *palataStore {
-	return &palataStore{m: map[int64]string{}, rev: map[string]map[int64]struct{}{}}
+func newPalataStore(file string) *palataStore {
+	s := &palataStore{m: map[int64]string{}, rev: map[string]map[int64]struct{}{}, f: file}
+	if file == "" {
+		return s
+	}
+	// загрузка: битый/отсутствующий файл — не фатально, начинаем с пустого
+	if b, err := os.ReadFile(file); err == nil {
+		var m map[int64]string
+		if json.Unmarshal(b, &m) == nil {
+			for k, v := range m {
+				s.m[k] = v
+				if s.rev[v] == nil {
+					s.rev[v] = map[int64]struct{}{}
+				}
+				s.rev[v][k] = struct{}{}
+			}
+			log.Printf("palataStore: загружено %d привязок из %s", len(s.m), file)
+		}
+	}
+	return s
 }
 func (s *palataStore) get(key int64, def string) string {
 	s.mu.Lock()
@@ -95,6 +119,22 @@ func (s *palataStore) set(key int64, v string) {
 		s.rev[v] = map[int64]struct{}{}
 	}
 	s.rev[v][key] = struct{}{}
+	s.persistLocked()
+}
+
+// persistLocked: сохранить привязки на диск (вызов только под локом).
+// Best-effort: ошибка записи логируется, память — источник истины.
+func (s *palataStore) persistLocked() {
+	if s.f == "" {
+		return
+	}
+	b, err := json.Marshal(s.m)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(s.f, b, 0o600); err != nil {
+		log.Printf("palataStore: запись %s: %v", s.f, err)
+	}
 }
 
 // chatsFor возвращает чаты, привязанные к палате командой /palata.
@@ -176,6 +216,8 @@ type app struct {
 	// protected — тихие палаты (env PROTECTED_ROOMS): бот в них НЕ публикует
 	// (медиа/TTS/soundboardsave отклоняются понятной ошибкой).
 	protected map[string]bool
+	// httpSrv — внутренний HTTP-сервер (для graceful shutdown).
+	httpSrv *http.Server
 }
 
 const maxConcurrentMedia = 3 // не более 3 медиа-публикаций одновременно
@@ -206,7 +248,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("bot init: %v", err)
 	}
-	ctx := context.Background()
+	// graceful shutdown: SIGINT/SIGTERM отменяет ctx → long polling
+	// останавливается, канал updates закрывается, HTTP-сервер и LiveKit-
+	// коннекты Publisher закрываются ниже после цикла.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	me, err := bot.GetMe(ctx)
 	if err != nil {
 		log.Fatalf("getMe: %v", err)
@@ -231,7 +277,7 @@ func main() {
 		meID:        me.ID,
 		pub:         NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
 		tts:         NewTTS(cfg.piperBin, cfg.piperModel),
-		store:       newPalataStore(),
+		store:       newPalataStore(os.Getenv("PALATA_STORE_FILE")),
 		soundsvcURL: env("SOUNDSVC_URL", "http://host.docker.internal:8080"),
 		mediaSem:    make(chan struct{}, maxConcurrentMedia),
 	}
@@ -245,7 +291,7 @@ func main() {
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
 
 	// HTTP для передачи аудио комнаты из API в Telegram.
-	go a.serveHTTP(env("TGBRIDGE_HTTP_ADDR", ":8090"))
+	a.serveHTTP(env("TGBRIDGE_HTTP_ADDR", ":8090"))
 
 	// allowed_updates Telegram запоминает между вызовами getUpdates (sticky):
 	// явный список страхует от "залипшей" настройки с прошлого запуска/вебхука.
@@ -265,6 +311,19 @@ func main() {
 			go a.chatMember(ctx, u.MyChatMember)
 		}
 	}
+
+	// ctx отменён (SIGINT/SIGTERM) → updates закрылся. Draining:
+	// HTTP даём 5с дописать ответы, LiveKit-коннекты рвём, reaper стопаем.
+	log.Printf("tgbridge: shutting down…")
+	if a.httpSrv != nil {
+		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer scancel()
+		if err := a.httpSrv.Shutdown(sctx); err != nil {
+			log.Printf("http shutdown: %v", err)
+		}
+	}
+	a.pub.Close()
+	log.Printf("tgbridge: stopped")
 }
 
 // chatMember реагирует на добавление бота в группу/канал и на выдачу прав.

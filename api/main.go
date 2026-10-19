@@ -2,14 +2,17 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/livekit/protocol/auth"
@@ -233,5 +236,23 @@ func main() {
 	} else {
 		log.Printf("central auth: OFF (APP_PASSWORD empty — site open)")
 	}
-	log.Fatal(srv.ListenAndServe())
+
+	// graceful shutdown: SIGINT/SIGTERM → влёте запросы получают 5с
+	// дописаться (раньше ListenAndServe рвал их посреди upload/загрузки).
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
+		log.Fatalf("listen: %v", err)
+	case s := <-sig:
+		log.Printf("api: got %s, shutting down…", s)
+	}
+	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer scancel()
+	if err := srv.Shutdown(sctx); err != nil {
+		log.Printf("api shutdown: %v", err)
+	}
+	log.Printf("api: stopped")
 }
