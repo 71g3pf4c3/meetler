@@ -234,15 +234,16 @@
 
     /* --- прогресс голосов за деструктив: 1 жёлтый, 2 оранжевый, 3 красный ---
        плюс бейдж "N/3" из data-votes на кнопке-крестике */
-    .kick.v1, .sfxdel.v1, #avatarThumbs .thumb button.v1 { background: #ffe08a !important; border-color: #b8860b !important; color: #6b5200 !important; }
-    .kick.v2, .sfxdel.v2, #avatarThumbs .thumb button.v2 { background: #ffb36b !important; border-color: #c05a00 !important; color: #6b2e00 !important; }
-    .kick.v3, .sfxdel.v3, #avatarThumbs .thumb button.v3 { background: #e23b3b !important; border-color: #900 !important; color: #fff !important; }
-    .kick[data-votes]::after, .sfxdel[data-votes]::after {
+    .kick.v1, .sfxdel.v1, .roomdel.v1, #avatarThumbs .thumb button.v1 { background: #ffe08a !important; border-color: #b8860b !important; color: #6b5200 !important; }
+    .kick.v2, .sfxdel.v2, .roomdel.v2, #avatarThumbs .thumb button.v2 { background: #ffb36b !important; border-color: #c05a00 !important; color: #6b2e00 !important; }
+    .kick.v3, .sfxdel.v3, .roomdel.v3, #avatarThumbs .thumb button.v3 { background: #e23b3b !important; border-color: #900 !important; color: #fff !important; }
+    .kick[data-votes]::after, .sfxdel[data-votes]::after, .roomdel[data-votes]::after {
       content: attr(data-votes);
       position: absolute; bottom: 100%; right: 0;
       font-size: 9px; background: #000; color: #ffd34d; padding: 0 3px;
       border-radius: 2px; white-space: nowrap; pointer-events: none;
     }
+    #roomsBody .roomdel { position: relative; }
     .tile .kick { position: absolute; } /* already; ensure ::after anchors */
     .sfxrow { position: relative; }
 

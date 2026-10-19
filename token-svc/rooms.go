@@ -220,18 +220,22 @@ func (rs *roomService) handleRooms(w http.ResponseWriter, r *http.Request) {
 // недоступен, в палате и так никого нет), RemoveAll сносит каталог палаты
 // со ВСЕМИ её звуками и портретами. Идемпотентно: несуществующая палата → 204.
 func (rs *roomService) deleteRoom(w http.ResponseWriter, _ *http.Request, room string) {
+	rs.closeRoom(room)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// closeRoom: каскадное закрытие палаты (без http). DeleteRoom выписывает всех
+// (best-effort — если SFU недоступен, в палате и так никого нет), RemoveAll
+// сносит каталог со звуками/портретами. Переиспользуется голосованием.
+func (rs *roomService) closeRoom(room string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := rs.client.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room}); err != nil {
-		// не блокируем удаление реестра ошибкой SFU: комната либо не жива,
-		// либо доживёт до empty_timeout; в логе причина останется
 		log.Printf("DeleteRoom(%s): %v (удаляю из реестра в любом случае)", room, err)
 	}
 	if err := os.RemoveAll(rs.roomDir(room)); err != nil {
-		http.Error(w, "remove", http.StatusInternalServerError)
-		return
+		log.Printf("closeRoom RemoveAll(%s): %v", room, err)
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleRoomScoped: всё под /api/rooms/<room>/...

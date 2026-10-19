@@ -802,11 +802,6 @@ function fmtAge(unixSec) {
   return Math.floor(s / 86400) + ' дн';
 }
 
-async function deleteRoom(name) {
-  const res = await fetch('/api/rooms/' + encodeURIComponent(name), { method: 'DELETE' });
-  if (!res.ok) throw new Error((await res.text()) || res.status);
-}
-
 async function refreshRooms() {
   const body = $('roomsBody');
   if (!body) return;
@@ -839,27 +834,45 @@ async function refreshRooms() {
       const tdAge = document.createElement('td');
       tdAge.textContent = fmtAge(r.createdAt);
       const tdDel = document.createElement('td');
-      // закрыть палату может любой (как удалить звук/портрет)
+      // закрыть палату — ПО ГОЛОСАМ: нужно 3 разных пациента (как кик/звук).
+      // Цвет крестика = прогресс. Порог взят — палата исчезает из списка.
       const del = document.createElement('button');
       del.className = 'roomdel';
       del.textContent = '✕';
-      del.title = 'Закрыть палату';
+      del.title = 'Голос за закрытие палаты (нужно 3)';
+      del.dataset.vkey = 'room:' + r.name;
+      del.dataset.room = r.name;
       del.onclick = async () => {
-        if (!confirm(`Закрыть палату ${r.name}?\nВсе её звуки и портреты будут удалены, пациенты — выписаны.`)) return;
-        try {
-          await deleteRoom(r.name);
-          await refreshRooms();
-        } catch (e) {
+        const v = await castVote(r.name, 'room', r.name);
+        if (!v) {
           const re = $('roomsErr');
-          if (re) re.textContent = 'Не удалось закрыть: ' + (e.message || e);
+          if (re) re.textContent = 'Голос не засчитан';
+          return;
         }
+        applyVoteColor(del, v.done ? 3 : v.count);
+        if (v.done) await refreshRooms();
       };
       tdDel.appendChild(del);
       tr.append(tdName, tdCnt, tdAge, tdDel);
       body.appendChild(tr);
     }
+    refreshRoomVotes(); // раскрасить прогресс закрытия у всех
   } catch (_) {
     // не показываем ошибку: список палат — не критичная фича
+  }
+}
+
+// опрос голосов за закрытие по каждой палате из списка (цвет виден всем).
+async function refreshRoomVotes() {
+  const btns = document.querySelectorAll('#roomsBody .roomdel');
+  for (const b of btns) {
+    const rm = b.dataset.room;
+    if (!rm) continue;
+    try {
+      const res = await fetch('/api/rooms/' + encodeURIComponent(rm) + '/votes');
+      const counts = (await res.json()) || {};
+      applyVoteColor(b, counts['room:' + rm] || 0);
+    } catch (_) { /* не критично */ }
   }
 }
 

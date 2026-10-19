@@ -43,9 +43,10 @@ func newVoteStore(rs *roomService) *voteStore {
 	return &voteStore{rs: rs, v: map[voteKey]map[string]time.Time{}}
 }
 
-var voteKinds = map[string]bool{"kick": true, "sound": true, "avatar": true}
+var voteKinds = map[string]bool{"kick": true, "sound": true, "avatar": true, "room": true}
 
-// validTarget: для kick — identity участника, для sound/avatar — имя файла.
+// validTarget: для kick — identity участника, для sound/avatar — имя файла,
+// для room — имя самой палаты (закрытие палаты).
 func validTarget(kind, target string) bool {
 	switch kind {
 	case "kick":
@@ -54,6 +55,8 @@ func validTarget(kind, target string) bool {
 		return target == filepath.Base(target) && soundExt[strings.ToLower(filepath.Ext(target))] != ""
 	case "avatar":
 		return target == filepath.Base(target) && avatarExt[strings.ToLower(filepath.Ext(target))] != ""
+	case "room":
+		return validRoom(target)
 	}
 	return false
 }
@@ -166,6 +169,21 @@ func (vs *voteStore) execute(kind, room, target string) {
 	case "avatar":
 		if err := vs.rs.av.delete(room, target); err != nil {
 			log.Printf("vote avatar-delete %s/%s: %v", room, target, err)
+		}
+	case "room":
+		// закрытие палаты: сносим все её голосования и каскадно удаляем
+		vs.clearRoom(room)
+		vs.rs.closeRoom(room)
+	}
+}
+
+// clearRoom выкидывает все голосования палаты (её больше нет).
+func (vs *voteStore) clearRoom(room string) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	for k := range vs.v {
+		if k.room == room {
+			delete(vs.v, k)
 		}
 	}
 }
