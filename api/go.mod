@@ -1,4 +1,4 @@
-module meetler/token-svc
+module meetler/api
 
 go 1.26.8
 

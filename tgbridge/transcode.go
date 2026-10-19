@@ -12,8 +12,7 @@ import (
 // ffmpeg-транскод во временные файлы. Форматы заточены под lksdk.NewLocalFileTrack:
 //   аудио -> .ogg (opus), видео -> .ivf (vp8) + отдельный .ogg (opus).
 //
-// ВСЕ выходы режутся до maxPlaySec: в палату не льётся ничего длиннее 15с
-// (TTS-простыни, случайно длинные медиа — обрежутся, а не займут эфир).
+// Выходные файлы обрезаются до maxPlaySec.
 
 const ffTimeout = 2 * time.Minute
 
@@ -29,7 +28,7 @@ func run(ctx context.Context, name string, args ...string) error {
 }
 
 // toOgg перекодирует любой аудио/контейнер в чистый ogg/opus 48k mono,
-// не длиннее maxPlaySec. Для TG voice (уже opus) это дешёвый remux+resample.
+// не длиннее maxPlaySec.
 func toOgg(ctx context.Context, src, dstDir string) (string, error) {
 	dst := filepath.Join(dstDir, "audio.ogg")
 	err := run(ctx, "ffmpeg", "-y", "-i", src,

@@ -19,10 +19,10 @@
       packages = forAllSystems (system:
         let pkgs = import nixpkgs { inherit system; }; in
         {
-          token-svc = pkgs.callPackage ./nix/token-svc.nix { };
+          api = pkgs.callPackage ./nix/api.nix { };
           tgbridge = pkgs.callPackage ./nix/tgbridge.nix { };
           web = mkWeb pkgs;
-          default = pkgs.callPackage ./nix/token-svc.nix { };
+          default = pkgs.callPackage ./nix/api.nix { };
         });
 
       devShells = forAllSystems (system:

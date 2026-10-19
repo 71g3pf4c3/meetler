@@ -17,4 +17,4 @@ result-*
 
 # бинари от локального `go build ./...`
 tgbridge/tgbridge
-token-svc/token-svc
+api/api

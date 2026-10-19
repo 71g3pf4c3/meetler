@@ -1,101 +1,71 @@
-# LiveKit SFU config — tuned под latency + connection stability.
-# Все значения выставлены осознанно; комментарии объясняют "почему", а не "что".
+# LiveKit для локальной разработки: media IP 127.0.0.1, TURN выключен.
 
-port: 7880            # signaling (wss) + RoomService API. nginx проксирует сюда.
+port: 7880
 bind_addresses:
   - "0.0.0.0"
 
-# Redis — нужен даже для single-node (устойчивое состояние комнат, роутинг).
 redis:
   address: 127.0.0.1:6379
 
-# API keys. Значения подставляются из .env при генерации (см. README / gen-keys).
-# ВАЖНО: эти ключи ДОЛЖНЫ совпадать с LIVEKIT_API_KEY/SECRET в token-svc.
 keys:
   API1af2014f9649: grv8dlPXqtcHAeMv4SZAlTi54j2tZ3xm4Rll5xFhi0KmYW5j
 
 rtc:
-  # UDP media range. Открой этот диапазон в firewall/security group (inbound UDP).
   port_range_start: 50000
   port_range_end: 60000
 
-  # ICE-over-TCP на 7881 — fallback когда UDP полностью зарезан, но TURN ещё не нужен.
   tcp_port: 7881
 
-  # Публичный IP определяется через STUN. На self-host с прямым публичным IP
-  # на интерфейсе можно вместо этого задать node_ip (см. README, вариант без NAT).
   use_external_ip: false
   node_ip: 127.0.0.1
 
-  # ICE lite ОТКЛЮЧЁН намеренно: ускоряет установку на копейки, но ломает коннект
-  # за NAT/в части сетей (could not establish pc connection). Приоритет —
-  # "коннект не рвётся", а не микросекунды на установке. Full ICE надёжнее.
-  # use_ice_lite: false
-
-  # Congestion control — ядро "минимизации задержки". Server-side BWE через TWCC:
-  # SFU переключает simulcast-слои ДО начала потерь, не допускает bufferbloat.
   congestion_control:
     enabled: true
-    allow_pause: true          # при жёстком конжесте паузим второстепенные треки
-    use_send_side_bwe: true    # send-side BWE точнее receiver reports на egress
+    allow_pause: true
+    use_send_side_bwe: true
     send_side_bwe_pacer: no-queue
 
-  # МАКСИМАЛЬНАЯ устойчивость: авто-fallback UDP → ICE/TCP → TURN/TLS.
   allow_tcp_fallback: true
-  # 0 = ICE/TCP пробуем ВСЕГДA при проблеме с UDP, не гадаем по RTT.
-  # Приоритет "коннект любой ценой" над скоростью установки.
   tcp_fallback_rtt_threshold: 0
-  # Миграция уже установленного, но лоссёвого UDP на TCP/TURN без реконнекта.
   allow_udp_unstable_fallback: true
-  # Больше буфер пакетов — переживаем всплески потерь/джиттера, не роняя поток.
   packet_buffer_size_video: 1000
   packet_buffer_size_audio: 500
 
-  # PLI throttle агрессивный: быстрее keyframe → быстрее картинка после джойна/обрыва.
-  # Качество/битрейт побоку, скорость восстановления важнее.
   pli_throttle:
     low_quality: 200ms
     mid_quality: 300ms
     high_quality: 500ms
 
-# Встроенный TURN с TLS на 5349 — проходит сквозь корпоративные firewall (443-like).
-# Это 50% "стабильности коннекта" за NAT. Требует валидного TLS-серта на домен TURN.
 turn:
-  # На первом старте certs/turn.* ещё нет (ACME не выписал) → TURN_ENABLED=false.
-  # После установки certs/turn.crt и certs/turn.key включаем TURN_ENABLED=true.
   enabled: false
   tls_port: 5349
   domain: localhost
   cert_file: /certs/turn.crt
   key_file: /certs/turn.key
-  # relay-порты, по которым TURN дотягивается до SFU. Открой inbound UDP на них тоже.
   relay_range_start: 30000
   relay_range_end: 40000
 
 room:
-  auto_create: true            # комната создаётся при первом джойне — нужно для анонимного UX
-  empty_timeout: 900           # 15 мин — широкий reconnect grace, комната не схлопывается
-  departure_timeout: 60        # держим слот участника дольше при обрыве → бесшовный reconnect
-  max_participants: 0          # лимит навязывает token-svc per-room, тут 0 = без глоб. лимита
+  auto_create: true
+  empty_timeout: 900
+  departure_timeout: 60
+  max_participants: 0
   enabled_codecs:
-    - mime: audio/opus         # только opus mono — простой/надёжный аудио-путь
+    - mime: audio/opus
     - mime: video/vp8
     - mime: video/vp9
     - mime: video/h264
-  # playout_delay: компромисс latency vs smoothness. min=0 = минимальная задержка,
-  # буфер растёт только при джиттере. Для "минимизации задержки" держим min низким.
   playout_delay:
     enabled: true
     min: 0
     max: 1000
 
 audio:
-  active_red_encoding: false   # RED выкл — приоритет простоты/latency, не качества
+  active_red_encoding: false
 
-# Prometheus метрики на :6789/metrics (скрейпь своим VictoriaMetrics/Prometheus).
 prometheus:
   port: 6789
 
 logging:
   level: info
-  json: true                   # структурные логи → удобно в VictoriaLogs
+  json: true

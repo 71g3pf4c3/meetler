@@ -1,13 +1,5 @@
-# meetler — self-hosted WebRTC conferencing (LiveKit SFU) с анонимным входом.
-#
-# Media networking (критично, читай README):
-#   - LiveKit SFU раздаёт RTP по UDP 50000-60000 → эти порты НЕ за прокси, host-level.
-#   - TURN-over-TLS на 5349 для клиентов за firewall (fallback, когда UDP зарезан).
-#   - nginx терминирует TLS на 443 для сигналинга (wss) + статики клиента + token API.
-#   - TURN/TLS тоже слушает host-level на 5349, nginx его НЕ проксирует (это не HTTP).
-#
-# UDP media НЕ использует Docker userland proxy (медленный, ломает ICE):
-#   network_mode: host для livekit — самый надёжный путь для self-host одной ноды.
+# meetler: nginx, API, LiveKit и необязательный Telegram-мост.
+# ICE и TURN используют порты хоста напрямую.
 
 services:
   redis:
@@ -26,8 +18,7 @@ services:
   livekit:
     image: livekit/livekit-server:v1.13.10
     restart: unless-stopped
-    # host network: UDP media (50000-60000) и TURN/TLS (5349) идут напрямую на
-    # публичный IP хоста без userland proxy. Это убирает SNAT-проблемы ICE.
+    # ICE и TURN слушают порты хоста.
     network_mode: host
     command: --config /etc/livekit.yaml
     volumes:
@@ -37,8 +28,8 @@ services:
       redis:
         condition: service_healthy
 
-  token-svc:
-    build: ./token-svc
+  api:
+    build: ./api
     restart: unless-stopped
     environment:
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
@@ -50,12 +41,9 @@ services:
       APP_PASSWORD: ${APP_PASSWORD:-}
       # персистентный реестр палат: ROOMS_DIR/<палата>/{sounds,avatars}
       ROOMS_DIR: /data/rooms
-      # список палат (/api/rooms): livekit в host-network. ХАРДКОД
-      # host.docker.internal (НЕ ${LIVEKIT_URL} из .env — тот указывает на
-      # 127.0.0.1 для tgbridge в host-network и внутри контейнера бьёт мимо).
+      # LiveKit работает в сети хоста; API обращается к нему через host-gateway.
       LIVEKIT_URL: ws://host.docker.internal:7880
-      # tgbridge (host-network) для "15с → TG". Пусто = фича отдаёт 503.
-      # tgbridge слушает :8090 на хосте → через host-gateway.
+      # Telegram-мост доступен через host-gateway при включённом профиле telegram.
       TGBRIDGE_URL: ${TGBRIDGE_URL:-http://host.docker.internal:8090}
     volumes:
       - rooms:/data/rooms         # палаты + их звуки/портреты, переживает рестарт
@@ -66,7 +54,7 @@ services:
       - "8080"
     # публикуем ТОЛЬКО на loopback хоста: tgbridge (host-network) заливает в
     # аптечку через /soundboardsave по 127.0.0.1:8080. Наружу не светится —
-    # публичный доступ идёт через nginx. nginx видит token-svc по internal-сети.
+    # публичный доступ идёт через nginx. nginx видит api по internal-сети.
     ports:
       - "127.0.0.1:8080:8080"
 
@@ -84,16 +72,14 @@ services:
     environment:
       SITE_DOMAIN: ${SITE_DOMAIN}
     networks: [internal]
-    # livekit работает в host-network, поэтому его signaling (127.0.0.1:7880)
-    # с точки зрения nginx достижим через host-gateway.
+    # nginx обращается к LiveKit через host-gateway.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - token-svc
+      - api
 
-  # Telegram-мост: пересланные voice/video/audio + озвучка текста (@бот/#палата) → палата.
-  # Профиль telegram: поднимается только `docker compose --profile telegram up`.
-  # host-network — чтобы достучаться до livekit на 127.0.0.1:7880.
+  # Необязательный профиль: docker compose --profile telegram up.
+  # LiveKit доступен мосту по loopback хоста.
   tgbridge:
     build: ./tgbridge
     restart: unless-stopped
@@ -108,7 +94,7 @@ services:
       # TTS: задай PIPER_MODEL=/models/ru.onnx и примонтируй модель через override,
       # иначе озвучка текста выключена (медиа работает без TTS).
       PIPER_MODEL: ${PIPER_MODEL:-}
-      # внутренний HTTP для "15с → TG" (token-svc проксирует сюда). host-network.
+      # внутренний HTTP для "15с → TG" (api проксирует сюда). host-network.
       TGBRIDGE_HTTP_ADDR: ${TGBRIDGE_HTTP_ADDR:-:8090}
     depends_on:
       - livekit

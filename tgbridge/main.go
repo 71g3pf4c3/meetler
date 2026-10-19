@@ -1,21 +1,4 @@
-// tgbridge — Telegram-бот, транслирующий пересланные голосовые/видео/аудио и
-// озвученный текст в палату meetler (LiveKit) как headless-participant.
-//
-// Палата определяется (по убыванию приоритета):
-//  1. явно в сообщении/подписи:  "#6" или "/palata 6"
-//  2. сохранённая для ЧАТА (командой /palata 6; в группе — общая на всех)
-//  3. дефолтная (DEFAULT_PALATA)
-//
-// Триггеры:
-//   - voice / audio / video / video_note  -> транскод ffmpeg -> публикация
-//   - текст с упоминанием бота (@bot) ИЛИ с "#<палата>"  -> TTS (piper) -> публикация
-//
-// ГРУППЫ: по умолчанию у бота включён privacy mode (@BotFather) — рядовой
-// участник-бот получает только команды, упоминания и реплаи. Голосовые/видео
-// без упоминания до него НЕ доставляются вовсе (код их не увидит). Решение:
-// сделать бота админом группы ИЛИ выключить privacy mode у @BotFather.
-// При добавлении в группу бот сам пишет эту подсказку (см. chatMember).
-
+// Telegram-мост: медиа, YouTube, TTS, аптечка звуков и аудио из палат.
 package main
 
 import (
@@ -86,7 +69,7 @@ func loadConfig() config {
 // на неё подписаны (командой /palata), и шлём туда голосовое.
 type palataStore struct {
 	mu  sync.Mutex
-	m   map[int64]string         // chatID -> палата
+	m   map[int64]string              // chatID -> палата
 	rev map[string]map[int64]struct{} // палата -> set(chatID)
 }
 
@@ -114,8 +97,7 @@ func (s *palataStore) set(key int64, v string) {
 	s.rev[v][key] = struct{}{}
 }
 
-// chatsFor возвращает чаты, привязанные к палате. Если явных привязок нет,
-// но палата == дефолтной, возвращаем все чаты с дефолтом (они на неё и так шлют).
+// chatsFor возвращает чаты, привязанные к палате командой /palata.
 func (s *palataStore) chatsFor(palata string) []int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,7 +108,7 @@ func (s *palataStore) chatsFor(palata string) []int64 {
 	return out
 }
 
-// валидный номер палаты = имя комнаты livekit (как в token-svc)
+// валидный номер палаты = имя комнаты livekit (как в api)
 var palataRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // извлечь палату из текста/подписи: "#6" или "/palata 6" / "/room 6"
@@ -187,7 +169,7 @@ type app struct {
 	pub         *Publisher
 	tts         *TTS
 	store       *palataStore
-	soundsvcURL string // база token-svc для заливки в аптечку (/soundboardsave)
+	soundsvcURL string // API для загрузки звуков
 	// mediaSem ограничивает одновременные публикации медиа в палаты (/tovoice,
 	// пересланное медиа): не более cap(mediaSem) разом. Защита от спама.
 	mediaSem chan struct{}
@@ -232,10 +214,10 @@ func main() {
 	})
 
 	a := &app{
-		cfg:   cfg,
-		bot:   bot,
-		me:    strings.ToLower(me.Username),
-		meID:  me.ID,
+		cfg:         cfg,
+		bot:         bot,
+		me:          strings.ToLower(me.Username),
+		meID:        me.ID,
 		pub:         NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
 		tts:         NewTTS(cfg.piperBin, cfg.piperModel),
 		store:       newPalataStore(),
@@ -244,7 +226,7 @@ func main() {
 	}
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
 
-	// внутренний HTTP для "15с → TG" (token-svc проксирует сюда). Не публичный.
+	// HTTP для передачи аудио комнаты из API в Telegram.
 	go a.serveHTTP(env("TGBRIDGE_HTTP_ADDR", ":8090"))
 
 	// allowed_updates Telegram запоминает между вызовами getUpdates (sticky):
@@ -371,7 +353,7 @@ func replyMediaFileID(rt *telego.Message) (fileID string, dur int, isVideo bool,
 
 // cmdSoundboardSave: /soundboardsave в РЕПЛАЕ на сообщение с аудио/видео/
 // голосовым — скачиваем, транскодим в ogg/opus (режется до maxPlaySec) и
-// заливаем в звуковую аптечку палаты (token-svc POST /sounds). Label — подпись
+// заливаем в звуковую аптечку палаты (api POST /sounds). Label — подпись
 // команды (/soundboardsave моё имя) либо имя файла.
 func (a *app) cmdSoundboardSave(ctx context.Context, m *telego.Message, arg, palata string) {
 	fileID, _, _, fname := replyMediaFileID(m.ReplyToMessage)

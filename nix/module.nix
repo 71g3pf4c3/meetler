@@ -91,8 +91,8 @@ in
     };
     systemd.services.livekit.serviceConfig.SupplementaryGroups = [ config.services.nginx.group ];
 
-    systemd.services.meetler-token = {
-      description = "meetler backend";
+    systemd.services.meetler-api = {
+      description = "meetler API";
       wantedBy = [ "multi-user.target" ];
       wants = [ "livekit.service" ];
       after = [ "livekit.service" ];
@@ -105,7 +105,7 @@ in
         TGBRIDGE_URL = "http://127.0.0.1:${toString cfg.telegram.port}";
       };
       serviceConfig = {
-        ExecStart = lib.getExe packages.token-svc;
+        ExecStart = lib.getExe packages.api;
         EnvironmentFile = cfg.environmentFiles;
         DynamicUser = true;
         StateDirectory = [
@@ -124,11 +124,11 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [
         "network-online.target"
-        "meetler-token.service"
+        "meetler-api.service"
       ];
       after = [
         "network-online.target"
-        "meetler-token.service"
+        "meetler-api.service"
       ];
       path = [
         pkgs.ffmpeg

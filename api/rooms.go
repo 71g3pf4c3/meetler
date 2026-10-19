@@ -1,21 +1,7 @@
 package main
 
-// Персистентный реестр палат + routing всего, что живёт под /api/rooms.
-//
-// Реестр — это файловая система: палата существует <=> существует каталог
-// ROOMS_DIR/<room>. Внутри палаты — её звуки и портреты:
-//
-//	ROOMS_DIR/<room>/sounds/<id>       звуковая аптечка палаты
-//	ROOMS_DIR/<room>/avatars/<id>       галерея портретов палаты
-//
-// ФС и есть state: нет отдельного индекса, который можно рассинхронизировать.
-// Палата регистрируется при первом входе (ensureRoom в handleToken) и живёт,
-// пока кто-нибудь её не закроет (DELETE /api/rooms/<room> — каскад: DeleteRoom
-// выписывает участников, RemoveAll сносит каталог со звуками и портретами).
-//
-// Список палат = реестр ∪ живые палаты SFU (созданные мимо /api/token,
-// например tgbridge). Если SFU недоступен — показываем реестр без счётчика
-// участников: список палат теперь важнее, чем живой статус.
+// Реестр палат в ROOMS_DIR и маршруты /api/rooms.
+// Список объединяет каталоги палат и активные комнаты LiveKit.
 
 import (
 	"context"
@@ -54,10 +40,7 @@ func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL string) *roomSer
 		root = "/data/rooms"
 	}
 	client := lksdk.NewRoomServiceClient(lkURL, apiKey, apiSecret)
-	// основной путь. Если не создаётся (права на volume/StateDirectory) —
-	// логируем ТОЧНУЮ ошибку и пробуем fallback во временный каталог, чтобы
-	// фича работала (эфемерно) вместо полного 503. Это чинит прод-симптом
-	// "room storage disabled", когда /var/lib/meetler/rooms недоступен.
+	// Если основной каталог недоступен, пробуем временное хранилище.
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		log.Printf("WARNING: ROOMS_DIR %q unavailable: %v", root, err)
 		fallback := filepath.Join(os.TempDir(), "meetler-rooms")
@@ -120,11 +103,7 @@ type kickRequest struct {
 	Identity string `json:"identity"`
 }
 
-// POST /api/kick — выписать участника из палаты (LiveKit RemoveParticipant).
-// ОТКРЫТЫЙ эндпоинт по дизайну продукта: анонимный вход, "кто кого выписывает"
-// решает нажавший крестик. Клиентским токеном кикать нельзя (нет roomAdmin),
-// поэтому сервер проксирует через API key/secret.
-// Не зависит от хранилища: работает даже когда ROOMS_DIR недоступен.
+// POST /api/kick удаляет участника через LiveKit RoomService.
 func (rs *roomService) handleKick(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

@@ -1,12 +1,4 @@
-// token-svc выдаёт анонимные short-lived room-JWT для входа в LiveKit.
-//
-// Анонимность: нет аккаунтов, нет IdP, нет email. identity генерируется случайно
-// (anon-<rand>), display name — произвольная строка от клиента. Токен ограничен
-// одной комнатой и имеет TTL. Сервер не персистит ничего кроме метрик LiveKit.
-//
-// Безопасность: сервис доступен только через nginx (/api/token). Он не принимает
-// готовый identity от клиента — identity всегда серверный рандом, чтобы клиент не мог
-// выдать себя за другого участника.
+// API: аутентификация, JWT для LiveKit, палаты, медиа и голосования.
 package main
 
 import (
@@ -30,7 +22,7 @@ type config struct {
 	ttl       time.Duration
 	roomMax   uint32
 	listen    string
-	rooms     *roomService // персистентный реестр палат (может быть nil в тестах)
+	rooms     *roomService // реестр палат
 }
 
 func mustEnv(k string) string {
@@ -156,8 +148,7 @@ func (c config) handleToken(w http.ResponseWriter, r *http.Request) {
 			CanUpdateOwnMetadata: &canUpdateOwn,
 		})
 
-	// enforce лимит участников: токен несёт RoomConfiguration, который livekit
-	// применяет при auto-create комнаты. Без этого roomMax был мёртвой настройкой.
+	// Передаём лимит участников в конфигурации создаваемой комнаты.
 	if c.roomMax > 0 {
 		at.SetRoomConfig(&livekit.RoomConfiguration{
 			Name:            req.Room,
@@ -196,17 +187,12 @@ func (c config) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func main() {
 	cfg := loadConfig()
 
-	// палаты: персистентный реестр (FS) + per-room звуки/портреты + кик.
-	// Если ROOMS_DIR не создаётся (нет прав) — НЕ роняем сервис: токены и
-	// кик работают, /api/rooms* деградируют в 503.
-	// ВАЖНО: до mux.HandleFunc("/api/token", cfg.handleToken): handleToken —
-	// метод на ЗНАЧЕНИИ config, регистрация копирует cfg; поля, присвоенные
-	// после регистрации, копия не увидит (ловили на ensureRoom == noop).
+	// Заполняем cfg.rooms до регистрации handleToken: метод копирует config.
 	roomsSvc := newRoomService(
 		getEnv("LIVEKIT_URL", "ws://127.0.0.1:7880"),
 		cfg.apiKey, cfg.apiSecret,
 		getEnv("ROOMS_DIR", "/data/rooms"),
-		os.Getenv("TGBRIDGE_URL"), // напр. http://host.docker.internal:8090; "" = мост не настроен
+		os.Getenv("TGBRIDGE_URL"), // пусто — мост не настроен
 	)
 	cfg.rooms = roomsSvc
 	if !roomsSvc.ok {
@@ -217,8 +203,8 @@ func main() {
 	mux.HandleFunc("/api/token", cfg.handleToken)
 	mux.HandleFunc("/healthz", cfg.handleHealth)
 	mux.HandleFunc("/api/rooms", roomsSvc.handleRooms)       // GET: список палат
-	mux.HandleFunc("/api/rooms/", roomsSvc.handleRoomScoped) // DELETE палаты + звуки/портреты
-	mux.HandleFunc("/api/kick", roomsSvc.handleKick)         // выписать участника (кто угодно)
+	mux.HandleFunc("/api/rooms/", roomsSvc.handleRoomScoped) // маршруты отдельной палаты
+	mux.HandleFunc("/api/kick", roomsSvc.handleKick)         // кик участника
 
 	// центральная аутентификация: один общий пароль (APP_PASSWORD). Если пуст —
 	// гейт выключен, сайт открыт. /api/auth и /healthz — всегда доступны.
@@ -230,7 +216,7 @@ func main() {
 		Addr:              cfg.listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
-		// ReadTimeout побольше: upload звука (до 5MiB) по медленному аплинку.
+		// Время на загрузку медиа.
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -239,7 +225,7 @@ func main() {
 	if roomsSvc.ok {
 		storage = roomsSvc.root
 	}
-	log.Printf("token-svc listening on %s (ttl=%s, room_max=%d, rooms=%s)",
+	log.Printf("api listening on %s (ttl=%s, room_max=%d, rooms=%s)",
 		cfg.listen, cfg.ttl, cfg.roomMax, storage)
 	if gate.enabled() {
 		log.Printf("central auth: ON (APP_PASSWORD set)")

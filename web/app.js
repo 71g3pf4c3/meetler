@@ -1,5 +1,4 @@
-// meetler браузерный клиент на livekit-client (пинованная версия).
-// Фокус: latency + stability. Все tuning-решения прокомментированы.
+// Браузерный клиент meetler на livekit-client.
 import {
   Room,
   RoomEvent,
@@ -27,8 +26,7 @@ function currentRoom() {
 const roomApi = (rm) => '/api/rooms/' + encodeURIComponent(rm);
 
 // --- голосование за деструктив (кик / удаление звука / портрета) ---
-// Действие исполняет СЕРВЕР только при voteThreshold РАЗНЫХ голосах. Один
-// пациент не может кикать/стирать в одиночку. Прогресс отражаем цветом.
+// Прогресс голосования считаем по voter-id на сервере.
 const VOTE_THRESHOLD = 3;
 
 // стабильный анонимный id браузера (голосующий). Не identity — голосовать
@@ -372,7 +370,7 @@ async function join() {
         maxRetries: 100,
       },
       publishDefaults: {
-        // simulcast ВЫКЛ: один слой надёжнее и дешевле, чем жонглирование тремя.
+        // Публикуем один видеослой.
         simulcast: false,
         // видео на минимум — лишь бы пролезло в любой канал. Качество не важно.
         videoEncoding: { maxBitrate: 150000, maxFramerate: 15 },
@@ -621,7 +619,7 @@ function playWelcome() { playCue('welcome', '/welcome.mp3'); }
 function playFarewell() { playCue('farewell', '/farewell.mp3'); }
 
 // локальный тайл: создаётся СРАЗУ после входа (с аватаркой из пула), видео
-// подменяет фон когда включается. Раньше без камеры своего тайла не было.
+// подменяет фон, когда включается.
 function ensureLocalTile() {
   if (localTile) return localTile;
   const el = document.createElement('div');
@@ -838,7 +836,7 @@ async function triggerMine(s) {
 }
 
 // проигрывает url: публикует в палату (слышат все) + локально + в запись 15с.
-// Жёсткий кэп 15с — как и всё проигрываемое в tgbridge.
+// Воспроизведение ограничено таймером ниже.
 // Локальный монитор идёт через gain: индивидуальный ползунок громкости
 // меняет громкость ТОЛЬКО у себя (в палату и в запись — как было).
 // burstId — ключ звука: громкость В ПАЛАТУ масштабируется по бёрсту (DDoS).
@@ -1717,7 +1715,7 @@ $('recBtn').onclick = () => {
 };
 
 // "15с → TG": последние 15с микса уходят голосовым в Telegram-группу.
-// Браузер шлёт WAV (точная обрезка без энкодера) в token-svc → tgbridge
+// Браузер шлёт WAV (точная обрезка без энкодера) в api → tgbridge
 // транскодит в ogg/opus и постит SendVoice в чат, привязанный к этой палате.
 const tgRecBtn = $('tgRecBtn');
 if (tgRecBtn) tgRecBtn.onclick = async () => {
