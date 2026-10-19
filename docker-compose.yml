@@ -54,6 +54,9 @@ services:
       # host.docker.internal (НЕ ${LIVEKIT_URL} из .env — тот указывает на
       # 127.0.0.1 для tgbridge в host-network и внутри контейнера бьёт мимо).
       LIVEKIT_URL: ws://host.docker.internal:7880
+      # tgbridge (host-network) для "15с → TG". Пусто = фича отдаёт 503.
+      # tgbridge слушает :8090 на хосте → через host-gateway.
+      TGBRIDGE_URL: ${TGBRIDGE_URL:-http://host.docker.internal:8090}
     volumes:
       - rooms:/data/rooms         # палаты + их звуки/портреты, переживает рестарт
     extra_hosts:
@@ -100,6 +103,8 @@ services:
       # TTS: задай PIPER_MODEL=/models/ru.onnx и примонтируй модель через override,
       # иначе озвучка текста выключена (медиа работает без TTS).
       PIPER_MODEL: ${PIPER_MODEL:-}
+      # внутренний HTTP для "15с → TG" (token-svc проксирует сюда). host-network.
+      TGBRIDGE_HTTP_ADDR: ${TGBRIDGE_HTTP_ADDR:-:8090}
     depends_on:
       - livekit
 

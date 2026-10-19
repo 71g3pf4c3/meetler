@@ -40,15 +40,16 @@ type roomInfo struct {
 }
 
 type roomService struct {
-	client *lksdk.RoomServiceClient
-	root   string // ROOMS_DIR
-	sb     *soundboard
-	av     *avatarStore
-	votes  *voteStore
-	ok     bool // root доступен; иначе /api/rooms* → 503 (токены и кик работают)
+	client      *lksdk.RoomServiceClient
+	root        string // ROOMS_DIR
+	sb          *soundboard
+	av          *avatarStore
+	votes       *voteStore
+	tgbridgeURL string // база tgbridge HTTP (для "15с → TG"); "" = мост не настроен
+	ok          bool   // root доступен; иначе /api/rooms* → 503 (токены и кик работают)
 }
 
-func newRoomService(lkURL, apiKey, apiSecret, root string) *roomService {
+func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL string) *roomService {
 	if root == "" {
 		root = "/data/rooms"
 	}
@@ -68,10 +69,11 @@ func newRoomService(lkURL, apiKey, apiSecret, root string) *roomService {
 		}
 	}
 	rs := &roomService{
-		client: client,
-		root:   root,
-		sb:     &soundboard{root: root},
-		av:     &avatarStore{root: root},
+		client:      client,
+		root:        root,
+		sb:          &soundboard{root: root},
+		av:          &avatarStore{root: root},
+		tgbridgeURL: tgbridgeURL,
 	}
 	rs.ok = dirWritable(root)
 	rs.votes = newVoteStore(rs)
@@ -272,8 +274,10 @@ func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) 
 		rs.av.dispatch(w, r, room, parts[2:])
 	case "votes":
 		rs.votes.dispatch(w, r, room, parts[2:])
-	case "welcome":
-		rs.sb.welcomeDispatch(w, r, room, parts[2:])
+	case "welcome", "farewell":
+		rs.sb.cueDispatch(w, r, room, parts[1], parts[2:])
+	case "tg-voice":
+		rs.handleTGVoice(w, r, room, parts[2:])
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}

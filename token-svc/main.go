@@ -206,6 +206,7 @@ func main() {
 		getEnv("LIVEKIT_URL", "ws://127.0.0.1:7880"),
 		cfg.apiKey, cfg.apiSecret,
 		getEnv("ROOMS_DIR", "/data/rooms"),
+		os.Getenv("TGBRIDGE_URL"), // напр. http://host.docker.internal:8090; "" = мост не настроен
 	)
 	cfg.rooms = roomsSvc
 	if !roomsSvc.ok {

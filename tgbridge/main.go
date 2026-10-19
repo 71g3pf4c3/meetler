@@ -81,13 +81,18 @@ func loadConfig() config {
 	}
 }
 
-// --- per-user выбранная палата ---
+// --- per-chat выбранная палата + обратный индекс палата→чаты ---
+// Обратный индекс нужен для "15с → TG": по имени палаты находим чаты, которые
+// на неё подписаны (командой /palata), и шлём туда голосовое.
 type palataStore struct {
-	mu sync.Mutex
-	m  map[int64]string
+	mu  sync.Mutex
+	m   map[int64]string         // chatID -> палата
+	rev map[string]map[int64]struct{} // палата -> set(chatID)
 }
 
-func newPalataStore() *palataStore { return &palataStore{m: map[int64]string{}} }
+func newPalataStore() *palataStore {
+	return &palataStore{m: map[int64]string{}, rev: map[string]map[int64]struct{}{}}
+}
 func (s *palataStore) get(key int64, def string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -98,8 +103,27 @@ func (s *palataStore) get(key int64, def string) string {
 }
 func (s *palataStore) set(key int64, v string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old, ok := s.m[key]; ok && s.rev[old] != nil {
+		delete(s.rev[old], key) // снять старую привязку
+	}
 	s.m[key] = v
-	s.mu.Unlock()
+	if s.rev[v] == nil {
+		s.rev[v] = map[int64]struct{}{}
+	}
+	s.rev[v][key] = struct{}{}
+}
+
+// chatsFor возвращает чаты, привязанные к палате. Если явных привязок нет,
+// но палата == дефолтной, возвращаем все чаты с дефолтом (они на неё и так шлют).
+func (s *palataStore) chatsFor(palata string) []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []int64
+	for id := range s.rev[palata] {
+		out = append(out, id)
+	}
+	return out
 }
 
 // валидный номер палаты = имя комнаты livekit (как в token-svc)
@@ -199,6 +223,9 @@ func main() {
 		store: newPalataStore(),
 	}
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
+
+	// внутренний HTTP для "15с → TG" (token-svc проксирует сюда). Не публичный.
+	go a.serveHTTP(env("TGBRIDGE_HTTP_ADDR", ":8090"))
 
 	// allowed_updates Telegram запоминает между вызовами getUpdates (sticky):
 	// явный список страхует от "залипшей" настройки с прошлого запуска/вебхука.
@@ -433,6 +460,22 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 		}
 		a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
 		return
+	}
+
+	// --- YouTube-ссылка: скачать первые maxPlaySec секунд и проиграть видео.
+	// В группах — только адресованное боту (упоминание/реплай/#палата), чтобы
+	// не хватать каждую ссылку в чате.
+	if yt := extractYouTubeURL(text + " " + caption); yt != "" {
+		if !isGroup || mentioned || replyToBot || palataFromText(caption) != "" || palataFromText(text) != "" {
+			a.reply(ctx, m.Chat.ID, "Качаю первые "+fmt.Sprint(maxPlaySec)+"с с YouTube в палату "+palata+"…")
+			if err := a.streamYouTube(ctx, palata, yt); err != nil {
+				log.Printf("streamYouTube: %v", err)
+				a.reply(ctx, m.Chat.ID, "YouTube не удался: "+err.Error())
+				return
+			}
+			a.reply(ctx, m.Chat.ID, "✓ проиграно в палате "+palata)
+			return
+		}
 	}
 
 	// --- текст: озвучить, если упомянут бот (@) ИЛИ (в личке) есть #палата.

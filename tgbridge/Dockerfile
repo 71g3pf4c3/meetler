@@ -7,11 +7,16 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tgbridge .
 
 FROM debian:bookworm-slim
 
-# ffmpeg (транскод) + piper (TTS). piper тянем релизом, модель — опционально
-# монтируется/качается отдельно (см. PIPER_MODEL).
+# ffmpeg (транскод) + piper (TTS) + yt-dlp (YouTube в палату).
+# yt-dlp тянем бинарём с GitHub (apt-версия устаревает и ломается об YouTube).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg ca-certificates wget xz-utils \
+      ffmpeg ca-certificates wget xz-utils python3 \
  && rm -rf /var/lib/apt/lists/*
+
+# yt-dlp: статический бинарь (обновляемый самим yt-dlp при необходимости).
+RUN wget -qO /usr/local/bin/yt-dlp \
+      "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" \
+ && chmod +x /usr/local/bin/yt-dlp
 
 # piper (amd64). Если не нужен TTS — переменные PIPER_* не задавай, бинарь просто лежит.
 ARG PIPER_VERSION=2023.11.14-2
