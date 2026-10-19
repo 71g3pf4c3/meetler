@@ -38,15 +38,11 @@ import (
 // сообщения анонимных админов группы (скрытых за маской группы).
 const groupAnonymousBotID = 1087968824
 
-// Лимиты длительности (сек):
-//
-//	maxUploadSec — то, что принимаем от юзера (voice/video/... из Telegram,
-//	               длительность известна из метаданных сообщения, без probe).
-//	maxPlaySec   — жёсткий потолок проигрывания в палате: всё, что длиннее,
-//	               обрезается на транскоде (ffmpeg -t), включая TTS.
+// Лимит длительности (сек): всё, что длиннее, НЕ отклоняется, а принудительно
+// обрезается на транскоде (ffmpeg -t maxPlaySec). Любое медиа проходит — просто
+// в палату попадут первые maxPlaySec секунд.
 const (
-	maxUploadSec = 10
-	maxPlaySec   = 15
+	maxPlaySec = 20
 )
 
 type config struct {
@@ -132,8 +128,8 @@ func parseCommand(text string) (cmd, addressee, arg string, ok bool) {
 
 func (a *app) helpText() string {
 	return "meetler — мост в палату 🏥\n\n" +
-		"• Голосовое / аудио / видео / кружок → проиграю всем в палате (до " +
-		fmt.Sprint(maxUploadSec) + " сек).\n" +
+		"• Голосовое / аудио / видео / кружок → проиграю всем в палате\n" +
+		"  (длинное обрежу до " + fmt.Sprint(maxPlaySec) + " сек).\n" +
 		"• /tovoice в реплае на сообщение с медиа (в т.ч. музыку документом) →\n" +
 		"  проиграю это медиа в палате.\n" +
 		"• /tts <текст> → озвучу текст (piper TTS).\n" +
@@ -313,11 +309,9 @@ func (a *app) cmdToVoice(ctx context.Context, m *telego.Message, palata string) 
 		a.reply(ctx, m.Chat.ID, "В этом сообщении нет медиа (нужны голосовое/аудио/видео/музыка).")
 		return
 	}
-	if dur > maxUploadSec {
-		a.reply(ctx, m.Chat.ID, fmt.Sprintf(
-			"Слишком длинная запись: %d сек (максимум %d).",
-			dur, maxUploadSec))
-		return
+	// длинное медиа не отклоняем — транскод обрежет до maxPlaySec
+	if dur > maxPlaySec {
+		a.reply(ctx, m.Chat.ID, fmt.Sprintf("Запись %d сек — проиграю первые %d.", dur, maxPlaySec))
 	}
 	if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {
 		log.Printf("streamFile: %v", err)
@@ -428,11 +422,9 @@ func (a *app) handle(ctx context.Context, m *telego.Message) {
 		if isGroup && !mentioned && !replyToBot && palataFromText(caption) == "" {
 			return
 		}
-		if dur > maxUploadSec {
-			a.reply(ctx, m.Chat.ID, fmt.Sprintf(
-				"Слишком длинная запись: %d сек (максимум %d). Обрежь и пришли короче.",
-				dur, maxUploadSec))
-			return
+		// длинное медиа не отклоняем — транскод обрежет до maxPlaySec
+		if dur > maxPlaySec {
+			a.reply(ctx, m.Chat.ID, fmt.Sprintf("Запись %d сек — проиграю первые %d.", dur, maxPlaySec))
 		}
 		isVideo := m.VideoNote != nil || m.Video != nil
 		if err := a.streamFile(ctx, palata, fileID, isVideo); err != nil {

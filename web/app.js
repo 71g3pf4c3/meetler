@@ -358,6 +358,8 @@ async function join() {
     const crumb = $('roomCrumb');
     if (crumb) crumb.textContent = roomName;
     refreshSoundboard();
+    if (sbTimer) clearInterval(sbTimer);
+    sbTimer = setInterval(refreshSoundboard, 20000); // fallback, если data-пинг потерялся
     refreshAvatars(); // галерея этой палаты — для тайлов (пул мог обновиться)
     // пока в палате — подхватывать портреты, которые принесли другие
     if (avatarsTimer) clearInterval(avatarsTimer);
@@ -410,6 +412,8 @@ function wireRoomEvents(r) {
     try {
       const msg = JSON.parse(new TextDecoder().decode(payload));
       if (msg && msg.t === 'broke' && msg.sid) breakTile(msg.sid);
+      // кто-то залил/удалил звук — обновить аптечку сразу, без перезагрузки
+      if (msg && msg.t === 'sfxupd') refreshSoundboard();
     } catch (_) {}
   });
   r.on(RoomEvent.LocalTrackPublished, (pub) => {
@@ -487,6 +491,15 @@ function broadcastBreak(sid) {
   if (!room || !room.localParticipant) return;
   try {
     const data = new TextEncoder().encode(JSON.stringify({ t: 'broke', sid }));
+    room.localParticipant.publishData(data, { reliable: true });
+  } catch (_) {}
+}
+
+// сообщить всем, что аптечка изменилась (залили/удалили звук) → мгновенно обновить
+function broadcastSfxUpdate() {
+  if (!room || !room.localParticipant) return;
+  try {
+    const data = new TextEncoder().encode(JSON.stringify({ t: 'sfxupd' }));
     room.localParticipant.publishData(data, { reliable: true });
   } catch (_) {}
 }
@@ -617,18 +630,45 @@ $('camBtn').onclick = async () => {
   await room.localParticipant.setCameraEnabled(!enabled);
   $('camBtn').textContent = 'Cam: ' + (!enabled ? 'on' : 'off');
 };
+// демонстрация экрана: toggle — старт/стоп своей трансляции
+let screenTracks = [];
 $('shareBtn').onclick = async () => {
+  if (screenTracks.length) {
+    // уже шарим — остановить
+    await stopShare();
+    return;
+  }
   try {
     const tracks = await createLocalScreenTracks({ audio: true });
-    for (const t of tracks) await room.localParticipant.publishTrack(t);
+    for (const t of tracks) {
+      await room.localParticipant.publishTrack(t);
+      // пользователь жмёт "Остановить доступ" в системной плашке браузера →
+      // трек заканчивается: подхватываем и приводим кнопку в исходное
+      t.mediaStreamTrack.addEventListener('ended', stopShare, { once: true });
+    }
+    screenTracks = tracks;
+    $('shareBtn').textContent = 'Стоп демонстрация';
+    $('shareBtn').classList.add('danger');
   } catch (e) {
     $('err').textContent = 'Демонстрация отменена: ' + e.message;
   }
 };
+
+async function stopShare() {
+  const tracks = screenTracks;
+  screenTracks = [];
+  for (const t of tracks) {
+    try { await room.localParticipant.unpublishTrack(t, true); } catch (_) {}
+    try { t.stop(); } catch (_) {}
+  }
+  const b = $('shareBtn');
+  if (b) { b.textContent = 'Демонстрация'; b.classList.remove('danger'); }
+}
 // --- Soundboard: проиграть звук по URL для ВСЕХ в палате (как ГОЙДА) ---
 let sfxCtx = null;
 const sfxCache = new Map();   // url -> decoded AudioBuffer
 let sfxBusy = false;          // не наслаиваем звуки друг на друга
+let sfxMonitorGain = null;    // активный gain локального монитора (для live-ползунка)
 
 async function loadBuffer(url) {
   if (sfxCache.has(url)) return sfxCache.get(url);
@@ -658,7 +698,8 @@ async function playUrlToRoom(url, btnEl) {
     const dest = sfxCtx.createMediaStreamDestination();
     src.connect(dest);               // в палату
     const monitor = sfxCtx.createGain();
-    monitor.gain.value = sbVolume(); // индивидуальная громкость
+    monitor.gain.value = sbVolume(); // индивидуальная громкость (у себя)
+    sfxMonitorGain = monitor;        // чтобы ползунок менял её НА ЛЕТУ
     src.connect(monitor);
     monitor.connect(sfxCtx.destination); // себе в колонки
 
@@ -670,8 +711,8 @@ async function playUrlToRoom(url, btnEl) {
     });
 
     await new Promise((resolve) => {
-      // кэп длительности: дольше 15с в эфир не льём
-      const cap = setTimeout(() => { try { src.stop(); } catch (_) {} }, 15000);
+      // кэп длительности: дольше 20с в эфир не льём (форсированное обрезание)
+      const cap = setTimeout(() => { try { src.stop(); } catch (_) {} }, 20000);
       src.onended = () => { clearTimeout(cap); resolve(); };
       src.start();
     });
@@ -680,6 +721,7 @@ async function playUrlToRoom(url, btnEl) {
     $('err').textContent = 'Звук не удался: ' + (e.message || e);
   } finally {
     try { if (pub) await room.localParticipant.unpublishTrack(track); } catch (_) {}
+    sfxMonitorGain = null;
     if (btnEl) btnEl.classList.remove('playing');
     sfxBusy = false;
   }
@@ -696,7 +738,10 @@ function sbVolume() {
   if (!slider) return;
   slider.value = String(Math.round(sbVolume() * 100));
   slider.addEventListener('input', () => {
-    localStorage.setItem('sbVolume', String(slider.value / 100));
+    const v = slider.value / 100;
+    localStorage.setItem('sbVolume', String(v));
+    // применить НА ЛЕТУ к своему монитору, если звук уже играет
+    if (sfxMonitorGain) sfxMonitorGain.gain.value = v;
   });
 })();
 
@@ -732,7 +777,7 @@ async function refreshSoundboard() {
         const r = await castVote(room.name, 'sound', s.id);
         if (!r) { $('sbErr').textContent = 'Голос не засчитан'; return; }
         applyVoteColor(del, r.done ? 3 : r.count);
-        if (r.done) await refreshSoundboard();
+        if (r.done) { await refreshSoundboard(); broadcastSfxUpdate(); }
       };
       row.append(b, del);
       box.appendChild(row);
@@ -744,6 +789,7 @@ async function refreshSoundboard() {
 // опрос прогресса голосов: красит ВСЕ элементы с data-vkey ("kind:target")
 // по текущему числу голосов — чтобы цвет был одинаков у всех пациентов.
 let votesTimer = null;
+let sbTimer = null; // периодический опрос аптечки (fallback к data-пингу)
 async function refreshVotes() {
   if (!room) return;
   let counts = {};
@@ -778,16 +824,11 @@ $('sbFile').onchange = async () => {
     if (!/\.(mp3|ogg|oga|wav|m4a|webm|opus)$/i.test(f.name)) {
       throw new Error('разрешены mp3/ogg/wav/m4a/webm/opus');
     }
-    // лимит длительности ≤10с: декодируем на клиенте ДО отправки
-    // (server-side проверки длительности нет — ffmpeg в token-svc не живёт;
-    // кэп на проигрывание 15с в playUrlToRoom остаётся страховкой)
-    sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
-    const probe = await sfxCtx.decodeAudioData(await f.arrayBuffer());
-    if (probe.duration > 10) {
-      throw new Error(`длиннее 10 секунд (${probe.duration.toFixed(0)}с) — обрежь`);
-    }
+    // длительность НЕ ограничиваем: любое аудио проходит, при проигрывании
+    // форсированно обрезается до 20с (кэп в playUrlToRoom).
     await uploadSound(f);
     await refreshSoundboard();
+    broadcastSfxUpdate(); // остальные увидят звук сразу, без перезагрузки
   } catch (e) {
     if (sbErr) sbErr.textContent = 'Загрузка не удалась: ' + (e.message || e);
   }
@@ -978,7 +1019,8 @@ async function refreshAvatars() {
       if (!avatars.length) box.textContent = 'портретов нет — пациенты ходят со стандартными';
       for (const a of avatars) {
         const th = document.createElement('div');
-        th.className = 'thumb';
+        th.className = 'thumb rar' + rarityForId(a.id); // палитра раритетности
+        th.title = ['обычный', 'необычный', 'редкий', 'эпический', 'легендарный'][rarityForId(a.id)];
         const img = document.createElement('img');
         img.src = a.url;
         img.alt = a.id;
@@ -1011,15 +1053,51 @@ function strHash(s) {
 }
 
 // дефолтный набор аватарок: базовый портрет (web/avatar.jpg), покрашенный в
-// разные цвета (web/dav/*.png, сгенерирован imagemagick'ом). Работает из
-// коробки, до того как в палату принесли портреты. Порядок стабильный
-// (файлы 1..8) — детерминизм хеша сохраняется.
+// разные цвета (web/dav/*.png). Работает из коробки. Порядок стабильный.
 const DEFAULT_AVATARS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `/dav/${n}.png`);
 
+// Веса раздачи аватарок (детерминированно по hash(sid), одинаково у всех):
+//   - дефолтные — ПРИОРИТЕТНЕЕ (высокий вес), выпадают чаще;
+//   - загруженные — реже, и КАЖДАЯ НОВАЯ ещё реже (вес убывает по порядку).
+// Чем больше портретов в палате — тем ниже шанс конкретного (total растёт).
+const DEFAULT_WEIGHT = 3;
+function uploadedWeight(i) { return DEFAULT_WEIGHT / (i + 2); } // 1.0, 0.75, 0.6, ...
+
+// buildAvatarPool: [{url, weight, rarity}] — дефолты + загруженные (по порядку id).
+function buildAvatarPool() {
+  const pool = DEFAULT_AVATARS.map((url) => ({ url, weight: DEFAULT_WEIGHT }));
+  avatarList.forEach((a, i) => pool.push({ url: a.url, weight: uploadedWeight(i), id: a.id }));
+  const total = pool.reduce((s, e) => s + e.weight, 0);
+  for (const e of pool) e.rarity = rarityTier(e.weight / total);
+  return { pool, total };
+}
+
+// rarityTier: по вероятности выпадения → тир раритетности (ниже p = реже = выше тир)
+function rarityTier(p) {
+  if (p >= 0.10) return 0; // common
+  if (p >= 0.05) return 1; // uncommon
+  if (p >= 0.025) return 2; // rare
+  if (p >= 0.012) return 3; // epic
+  return 4;                 // legendary (самые редкие)
+}
+
 function avatarUrlFor(sid) {
-  // приоритет у портретов палаты; пусто — стандартный набор
-  const pool = avatarList.length ? avatarList.map((a) => a.url) : DEFAULT_AVATARS;
-  return pool[strHash(sid) % pool.length];
+  const { pool, total } = buildAvatarPool();
+  if (!pool.length) return null;
+  // детерминированный взвешенный выбор: доля хеша × суммарный вес
+  let x = (strHash(sid) % 100000) / 100000 * total;
+  for (const e of pool) {
+    x -= e.weight;
+    if (x < 0) return e.url;
+  }
+  return pool[pool.length - 1].url;
+}
+
+// rarityForId: тир раритетности загруженного портрета (для палитры в галерее)
+function rarityForId(id) {
+  const { pool } = buildAvatarPool();
+  const e = pool.find((x) => x.id === id);
+  return e ? e.rarity : 0;
 }
 
 function applyAvatarToPh(ph) {
@@ -1046,8 +1124,11 @@ $('avatarFile').onchange = async () => {
     if (!/\.(jpe?g|png|gif|webp)$/i.test(f.name)) {
       throw new Error('разрешены jpg/png/gif/webp');
     }
+    // ужимаем по разрешению и кодеку: downscale ≤256px + webp (fallback jpeg).
+    // Экономит трафик/диск и нормализует формат (сервер хранит как есть).
+    const { blob, ext } = await compressImage(f, 256, 0.82);
     const fd = new FormData();
-    fd.append('file', f);
+    fd.append('file', blob, 'avatar.' + ext);
     const res = await fetch(roomApi(rm) + '/avatars', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.text()) || res.status);
     await refreshAvatars();
@@ -1055,6 +1136,39 @@ $('avatarFile').onchange = async () => {
     if (avErr) avErr.textContent = 'Загрузка не удалась: ' + (e.message || e);
   }
 };
+
+// compressImage: downscale до maxDim (по длинной стороне) и перекодирование.
+// webp если поддерживается браузером, иначе jpeg. Возвращает {blob, ext}.
+async function compressImage(file, maxDim, quality) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('битая картинка'));
+      i.src = url;
+    });
+    let { width: w, height: h } = img;
+    if (Math.max(w, h) > maxDim) {
+      const k = maxDim / Math.max(w, h);
+      w = Math.round(w * k); h = Math.round(h * k);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+    const tryType = (type) => new Promise((res) => canvas.toBlob(res, type, quality));
+    let blob = await tryType('image/webp');
+    let ext = 'webp';
+    if (!blob || blob.type !== 'image/webp') { // старый браузер → jpeg
+      blob = await tryType('image/jpeg');
+      ext = 'jpg';
+    }
+    if (!blob) throw new Error('не удалось перекодировать');
+    return { blob, ext };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 // галерея портретов живёт в палате (not на главной): обновляется из join()
 
@@ -1097,6 +1211,39 @@ $('themeToggle').onclick = () => {
   applyTheme(document.body.classList.contains('dark') ? 'light' : 'dark');
 };
 applyTheme(localStorage.getItem('meetlerTheme') === 'dark' ? 'dark' : 'light');
+
+// --- центральная аутентификация: общий пароль на всё приложение ---
+// На загрузке спрашиваем сервер, авторизованы ли мы (cookie). Если нет —
+// показываем сплэш-гейт поверх всего. Верный пароль → cookie → гейт прячется.
+const gateEl = $('gate');
+function showGate() { if (gateEl) { gateEl.hidden = false; setTimeout(() => $('gatePass').focus(), 50); } }
+function hideGate() { if (gateEl) gateEl.hidden = true; }
+
+async function submitGate() {
+  const pass = $('gatePass').value;
+  $('gateErr').textContent = '';
+  try {
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pass }),
+    });
+    if (res.ok) { hideGate(); return; }
+    $('gateErr').textContent = res.status === 401 ? 'Неверный пароль' : 'Ошибка входа';
+  } catch (_) {
+    $('gateErr').textContent = 'Сервер недоступен';
+  }
+}
+
+(async function initGate() {
+  if (!gateEl) return;
+  try {
+    const res = await fetch('/api/auth'); // 200 если cookie валиден или гейт выключен
+    if (!res.ok) showGate();
+  } catch (_) { showGate(); }
+  $('gateBtn').onclick = submitGate;
+  $('gatePass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitGate(); });
+})();
 
 // Esc — свернуть развёрнутый на всё окно тайл
 document.addEventListener('keydown', (e) => {
@@ -1228,9 +1375,12 @@ function cleanup() {
   tiles.clear();
   if (localTile) { localTile.remove(); localTile = null; }
   document.body.classList.remove('tile-maximized'); // сбросить разворот
+  screenTracks = []; // сброс состояния демонстрации
+  { const b = $('shareBtn'); if (b) { b.textContent = 'Демонстрация'; b.classList.remove('danger'); } }
   if (avatarsTimer) { clearInterval(avatarsTimer); avatarsTimer = null; }
   if (wnavTimer) { clearInterval(wnavTimer); wnavTimer = null; }
   if (votesTimer) { clearInterval(votesTimer); votesTimer = null; }
+  if (sbTimer) { clearInterval(sbTimer); sbTimer = null; }
   stopStats();
   // при смене палаты stage остаётся виден (мгновенный переход, без мигания
   // формы входа); обычный выход — прячем stage и возвращаем форму
