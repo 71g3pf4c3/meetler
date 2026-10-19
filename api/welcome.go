@@ -1,10 +1,7 @@
 package main
 
-// Звуковые «джинглы» палаты: приветствие (вход) и прощание (выход).
-// Одна ячейка на палату на каждый вид: ROOMS_DIR/<room>/<kind>.<ext>,
-// kind ∈ {welcome, farewell}. Нет кастомного — фронт играет дефолт
-// (web/welcome.mp3 / web/farewell.wav). Лежат ВНЕ sounds/, чтобы не стать
-// кнопкой аптечки. Переиспользуют whitelist/sniff из sounds.go.
+// Приветствие и прощание палаты: ROOMS_DIR/<room>/<kind>.<ext>.
+// При отсутствии файла клиент использует web/welcome.mp3 или web/farewell.mp3.
 
 import (
 	"io"

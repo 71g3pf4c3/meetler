@@ -1,277 +1,159 @@
 # meetler
 
-Self-hosted видеоконференции на WebRTC в эстетике старого форума/дурдома. SFU —
-[LiveKit](https://github.com/livekit/livekit) (Go, pion под капотом). Фокус:
-минимальная задержка и коннект, который не рвётся. Вход анонимный — без аккаунтов,
-по номеру «палаты».
+Видеоконференции в браузере: LiveKit SFU, nginx, Go API и необязательный
+Telegram-мост. Участники входят по имени палаты без аккаунтов. `APP_PASSWORD`
+включает общий пароль для доступа к API.
 
-Это не форк Jitsi. Та же архитектура (SFU + сигналинг + TURN + браузерный клиент),
-но на Go-SFU с production-grade congestion control: TWCC send-side BWE, dynacast,
-adaptive stream, агрессивный авто-fallback UDP → ICE/TCP → TURN/TLS.
+- **web** — видеозвонки, шаринг экрана, громкость участников, звуки и портреты палат,
+  голосования за кик и удаление, приветственные и прощальные звуки.
+- **api** — вход по паролю, JWT для LiveKit, реестр палат, загрузки, голосования
+  и передача аудио комнаты в Telegram.
+- **tgbridge** — медиа и TTS из Telegram в палаты, сохранение звуков в аптечку,
+  отправка аудио палаты в привязанные чаты.
+- **nginx** — HTTPS, статика, `/api/`, `/healthz` и WebSocket-сигналинг LiveKit.
+- **LiveKit** — медиа и встроенный TURN. В Compose настроен Redis;
+  NixOS-модуль не требует его для одной ноды.
 
-## Скриншоты
+## NixOS
 
-Приёмное отделение (вход в палату):
+Добавь input и `meetler.nixosModules.default` в конфигурацию системы:
 
-![Вход](docs/screenshots/01-join.png)
-
-Палата с участниками (зелёная рамка = говорит):
-
-![Палата](docs/screenshots/02-ward.png)
-
-Выключенная камера → дефолтная аватарка:
-
-![Аватар](docs/screenshots/03-avatar.png)
-
-## Фичи
-
-- Анонимный вход, рандомный identity, без PII. Имя запоминается (localStorage,
-  на каждый ввод) — не надо вводить заново при каждом визите.
-- **Меню палат слева в конференции** — вертикальный список всех палат:
-  смена палаты в 1 клик, без перезагрузки страницы и без повторного ввода ника
-  (switchRoom: disconnect → cleanup → join в новую).
-- Видео (simulcast off, 180p низкий битрейт — приоритет «пролезть всегда»).
-- Аудио opus mono, DTX/RED off — минимум задержки и обработки.
-- Зелёная подсветка говорящих (`ActiveSpeakersChanged`).
-- Аватарка при выключенной камере / стоп-шеринге (mute видео ↔ аватарка, у всех).
-- **Индивидуальная громкость** каждого участника (ползунок на тайле, только у
-  себя). **Деструктив — по голосам**: кик участника, удаление звука/портрета И
-  **закрытие палаты** срабатывают ТОЛЬКО когда проголосовали 3 РАЗНЫХ пациента (anti-griefing).
-  Прогресс отражается цветом крестика (жёлтый→оранжевый→красный, бейдж N/3);
-  исполняет сервер (`/api/rooms/<room>/votes`, дедуп по анонимному client-id).
-  Кикнутый улетает на `/jail.html` с minecraft-анимацией поломки его тайла
-  (трещины + разлёт, у всех синхронно через LiveKit data).
-- **Тёмная тема (Solarized Dark)** — тумблер в правом верхнем углу (localStorage).
-- **Звук приветствия палаты** — играет у всех при входе пациента; дефолтный
-  (`/welcome.mp3`) кастомизируется на палату (`POST/DELETE /api/rooms/<room>/welcome`).
-- **Галерея портретов** и **аптечка звуков** — теперь в самой палате (не на
-  главной), у каждой палаты свои.
-- **Персистентные палаты** — реестр на файловой системе
-  (`ROOMS_DIR/<палата>/{sounds,avatars}`): палата живёт, пока кто-нибудь не
-  закроет её (✕ в списке на главной — каскад: DeleteRoom выписывает участников,
-  RemoveAll сносит звуки/портреты палаты). Палата регистрируется при первом
-  входе; список = реестр ∪ живые комнаты SFU. Переживает рестарты.
-- **Звуковая аптечка (soundboard)** — ЗВУКИ КОНКРЕТНОЙ ПАЛАТЫ: любой пациент
-  заливает звук (до 2 МБ и 10 сек, mp3/ogg/wav/m4a/webm/opus), каждый становится
-  кнопкой: нажатие слышит вся палата. Ползунок громкости — индивидуальный
-  (только у себя, localStorage). Удалить звук может любой (✕ у кнопки).
-  Всё проигрываемое — не длиннее 15 сек.
-- **Галерея портретов** — ПОРТРЕТЫ КОНКРЕТНОЙ ПАЛАТЫ: любой заливает картинки
-  (jpg/png/gif/webp, до 4 МБ), каждому пациенту достаётся случайная:
-  детерминированный хеш sid по стабильному списку (все зрители видят одну и ту
-  же, без сигналинга). Убрать лишний портрет может кто угодно (✕ в галерее).
-  Пока галерея пуста — дефолтный набор аватарок `/dav/` (работает из коробки).
-- **Скачать 15с** — кольцевой PCM-буфер микса комнаты → .wav (ровно 15с).
-- Клик по шапке — выход в приёмное отделение (в корень).
-
-> **Миграция со старой версии** (глобальные sounds/avatars): старые волюмы
-> `sounds`/`avatars` больше не используются — данные теперь живут в `rooms`
-> (`/data/rooms/<палата>/...`). Старые файлы можно разложить по палатам вручную:
-> `docker run --rm -v hit-meet_rooms:/r -v hit-meet_sounds:/s alpine \
->  sh -c 'mkdir -p /r/general/sounds && cp /s/* /r/general/sounds/'` (комнату
-> `general` потом создаст первый вошедший... или создай её входом с таким именем).
-- Устойчивость: бесконечный reconnect, захват устройств с таймаутом (зависший
-  getUserMedia не блокирует вход), fallback на TCP/TURN при любой проблеме UDP.
-
-## Архитектура
-
-```
-браузер ──wss(443)──► Caddy ──► LiveKit signaling (7880)
-   │                    └──► token-svc (анонимный room-JWT)
-   │
-   └──RTP/UDP(50000-60000)──► LiveKit SFU   (напрямую, host-network)
-   └──TURN/TLS(5349)────────► LiveKit TURN  (fallback за firewall)
-```
-
-- **livekit** — SFU + встроенный TURN. `network_mode: host` — UDP media идёт напрямую
-  на публичный IP без Docker userland proxy (иначе ICE деградирует).
-- **token-svc** — Go, выдаёт короткоживущий room-JWT со случайным `anon-<id>`.
-  identity всегда серверный рандом — клиент не может выдать себя за другого.
-- **caddy** — TLS (авто-ACME), проксирует wss-сигналинг, token API, отдаёт статику.
-- **redis** — состояние комнат/роутинг (нужен даже на одной ноде).
-
-## Требования
-
-- Публичный IP на хосте (прямой, без NAT перед ним — иначе см. раздел NAT).
-- DNS A/AAAA `SITE_DOMAIN` → этот хост.
-- Открытые порты (firewall / security group):
-  - `443/tcp`, `80/tcp` — Caddy (TLS + ACME).
-  - `50000-60000/udp` — RTP media.
-  - `7881/tcp` — ICE-over-TCP fallback.
-  - `5349/tcp` — TURN/TLS.
-  - `30000-40000/udp` — TURN relay.
-- Docker + docker compose, `bash`, `sed`, coreutils.
-
-## Запуск
-
-```bash
-make keys          # сгенерить API keypair в .env
-# отредактируй .env: SITE_DOMAIN, TURN_DOMAIN (обычно = SITE_DOMAIN)
-
-make up            # поднять стек (TURN пока off — серта ещё нет)
-# дождись, пока Caddy выпишет ACME-серт (make logs)
-
-make turn-cert     # вытащить серт Caddy в ./certs для TURN
-# в .env: TURN_ENABLED=true
-make up            # перезапуск — теперь TURN/TLS активен
-```
-
-Открой `https://SITE_DOMAIN`, введи комнату → ты в конференции.
-
-## Tuned-настройки (что и зачем)
-
-Сервер (`livekit/livekit.yaml.template`):
-- `congestion_control.use_send_side_bwe: true` — SFU оценивает пропускную по TWCC и
-  режет/переключает слои **до** потерь. Это и есть "минимизация задержки" на практике.
-- `allow_tcp_fallback` + `tcp_fallback_rtt_threshold: 150` + `allow_udp_unstable_fallback`
-  — миграция лоссёвого UDP на ICE/TCP или TURN/TLS без реконнекта.
-- `turn` TLS/5349 — проходит сквозь корпоративные firewall (~50% "стабильности" за NAT).
-- `room.playout_delay.min: 0` — минимальный буфер, растёт только при джиттере.
-- `audio/red` + `active_red_encoding` — FEC голоса, скрывает потери пакетов.
-
-Клиент (`web/app.js`):
-- `simulcast: true` c 3 слоями (180p/360p/720p).
-- `adaptiveStream` — клиент просит слой под размер тайла.
-- `dynacast` — SFU не гоняет неиспользуемые слои.
-- `dtx` + `red` на аудио.
-
-## Анонимность
-
-- Нет аккаунтов/IdP/email. `identity` = серверный `anon-<rand>`.
-- Токен ограничен одной комнатой + TTL (`TOKEN_TTL`).
-- В логах нет PII. Хочешь строже — выключи логи token-svc, сократи TTL.
-- E2EE (сервер не видит медиа) не включён — это клиентский флаг `livekit-client`
-  (insertable streams). Можно добавить позже, см. LiveKit E2EE docs.
-
-## Если хост за NAT (OpenStack floating IP, облако)
-
-`use_external_ip: true` в конфиге определяет публичный IP через STUN. Если self-ping
-не проходит (security group не пускает трафик самому себе) — в `livekit.yaml.template`:
-- выстави `node_ip: <floating-ip>` и `use_external_ip: false`, либо
-- добавь `skip_external_ip_validation: true`.
-Floating IP должен 1:1 мапиться на порт инстанса, security group — открыть UDP range.
-
-## Ротация TURN-серта
-
-Caddy обновляет ACME-серт сам, но встроенный TURN читает файл. По таймеру:
-```bash
-make turn-cert && docker compose restart livekit
-```
-
-## Observability
-
-LiveKit отдаёт Prometheus-метрики на `:6789/metrics` (host-network). Скрейпь своим
-Prometheus/VictoriaMetrics. Логи структурные (JSON) → VictoriaLogs.
-
-## Telegram-мост (tgbridge)
-
-Бот, который транслирует в палату пересланные ему медиа и озвучивает текст.
-
-- Пересылаешь боту **голосовое / аудио / видео / видео-кружок** → проигрывается у
-  всех в палате (ffmpeg транскод: аудио→opus, видео→vp8+opus). Лимит: **10 сек**
-  на запись, всё проигрываемое — **не длиннее 15 сек** (обрезается).
-- **`/tts <текст>`** — явная озвучка текста (piper TTS), работает и в группах
-  без упоминания.
-- **`/tovoice`** в реплае на сообщение с медиа (голосовое/аудио/видео/музыка
-  документом) — проиграть это медиа в палате.
-- Текст с **@упоминанием бота** (в личке также с **#палатой**) → озвучка через
-  piper (TTS).
-- Палата (приоритет): `#6` или `/palata 6` в сообщении → сохранённая командой
-  `/palata 6` → `DEFAULT_PALATA`. `/palata` без аргумента — показать текущую.
-- Команды: `/help`, `/start`, `/palata`, `/tts`, `/tovoice` — зарегистрированы
-  в меню Telegram (кнопка «/» рядом с полем ввода).
-
-**Группы:** по умолчанию у ботов включен privacy mode — рядовой бот в группе
-получает только команды, упоминания и реплаи, медиа без упоминания до него
-**не доставляется вовсе**. Чтобы медиа работало в группе, нужно одно из двух:
-- сделать бота **админом группы** (админы видят всё);
-- или `@BotFather → /setprivacy → выбрать бота → Disable`.
-
-В группах бот реагирует только на **адресованные** ему сообщения: @упоминание,
-реплай на его сообщение или `#палата` в подписи к медиа — каждое голосовое
-чата он не перехватывает. Команды понимают @суффикс (`/palata@bot 6`), команды
-с чужим @суффиксом игнорируются. При добавлении в группу бот сам пишет
-подсказку. Сообщения других ботов игнорируются (anti-loop), анонимные админы
-(GroupAnonymousBot) — работают.
-
-Бот — headless-participant LiveKit (identity `tgbridge`), держит `LIVEKIT_API_KEY/
-SECRET`, подключается к палате по `ws://127.0.0.1:7880`, льёт и отключается по idle.
-
-docker-compose (профиль `telegram`, не поднимается по умолчанию):
-```bash
-# в .env: TELEGRAM_BOT_TOKEN=...  (ключи livekit уже есть)
-docker compose --profile telegram up -d --build
-```
-TTS: смонтируй piper .onnx модель и задай `PIPER_MODEL=/models/ru.onnx` (без неё
-озвучка текста выключена, медиа работает).
-
-NixOS:
 ```nix
-services.meetler.telegram = {
-  enable = true;
-  environmentFile = "/run/secrets/tg.env";   # TELEGRAM_BOT_TOKEN=...
-  # Голос piper: авто-скачивание русской модели (dmitri | irina | ruslan)
-  piperVoice = "dmitri";
-  # ...или своя модель (взаимоисключимо с piperVoice):
-  # piperModel = "/var/lib/piper/ru.onnx";   # null = TTS off
+inputs.meetler = {
+  url = "github:71g3pf4c3/meetler";
+  inputs.nixpkgs.follows = "nixpkgs";
 };
 ```
 
-## Деплой через NixOS (альтернатива docker-compose)
-
-Flake экспортирует `nixosModules.default`, который оборачивает официальный
-`services.livekit` с tuned-настройками + token-svc (systemd, DynamicUser) +
-reverse-proxy (Caddy или nginx) + ACME + firewall.
+Для локального checkout можно указать `path:/полный/путь/к/meetler`.
 
 ```nix
-# flake.nix твоей системы (репозиторий на GitHub пока называется hit-meet)
-{
-  inputs.meetler.url = "github:71g3pf4c3/hit-meet";
-  outputs = { nixpkgs, meetler, ... }: {
-    nixosConfigurations.meet = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        meetler.nixosModules.default
-        {
-          services.meetler = {
-            enable = true;
-            domain = "meet.example.com";
-            acmeEmail = "admin@example.com";
-            reverseProxy = "nginx";          # или "caddy" (дефолт)
-            livekitKeyFile = "/run/secrets/livekit-keys.yaml";
-            tokenEnvironmentFile = "/run/secrets/token.env";
-            nodeIp = "203.0.113.10";         # floating IP для облака/NAT
-          };
-        }
-      ];
-    };
+services.meetler = {
+  enable = true;
+  domain = "meet.example.com";
+  port = 8085;
+  sslCertificate = "/etc/ssl/meetler/certificate-chain.crt";
+  sslCertificateKey = "/etc/ssl/meetler/private.key";
+  livekitKeyFile = "/run/secrets/livekit-keys.yaml";
+  environmentFiles = [ "/run/secrets/meetler-api.env" ];
+
+  telegram = {
+    enable = true;
+    environmentFile = "/run/secrets/telegram.env";
+    piperModel = "/var/lib/piper/glados.onnx";
   };
-}
+};
 ```
 
-Секреты (вне nix store):
-- `livekitKeyFile` — формат `<key>: <secret>` (`livekit-server generate-keys`).
-- `tokenEnvironmentFile` — `LIVEKIT_API_KEY=...` и `LIVEKIT_API_SECRET=...`,
-  та же пара key/secret. Клади через sops-nix / agenix / Vault, не в git.
+`livekitKeyFile` содержит `<key>: <secret>`. В `environmentFiles` должны быть
+те же значения:
 
-Выбор reverse-proxy: nginx настраивается с `proxyWebsockets` для wss-сигналинга
-(без этого livekit-сигналинг не поднимется) и 24h read/send timeout на `/rtc`.
-Caddy проксирует WS прозрачно. ACME централизован в `security.acme`, серт шарится
-между webserver и встроенным TURN livekit через группу-владельца.
+```dotenv
+LIVEKIT_API_KEY=...
+LIVEKIT_API_SECRET=...
+APP_PASSWORD=...
+```
 
-На первом деплое (серта ещё нет) можно `services.meetler.enableTurn = false`,
-после выписки серта — снять флаг и пересобрать.
+`APP_PASSWORD` необязателен: пустое значение отключает проверку пароля.
+Файлы из `environmentFiles` читают и API, и Telegram-мост. Можно передать
+отдельные файлы с ключами и паролем. Бот получает `TELEGRAM_BOT_TOKEN` из
+`telegram.environmentFile`. Секреты хранятся вне Nix store.
 
-Dev-shell: `nix develop` (go, gopls, livekit, livekit-cli, caddy, nginx).
+Модель Piper задаётся полным путём; рядом нужен файл `<model>.onnx.json`.
+Без `piperModel` TTS выключен. Модуль добавляет ffmpeg, yt-dlp и, при указанной
+модели, Piper.
 
-Примечание: nixpkgs тянет livekit из своего пина (может быть чуть старее docker-пина
-v1.13.10 — tuned-поля конфига идентичны, API совместим).
+Сертификат и ключ задаются **полными путями с любыми именами файлов**.
+Их используют nginx и TURN; файлы должны быть доступны группе `nginx`.
+Выпуск и обновление сертификата настраиваются отдельно. Для `security.acme`
+укажи у своего сертификата:
 
-## Лимиты
+```nix
+reloadServices = [ "nginx.service" "livekit.service" ];
+```
 
-- Один инстанс LiveKit. Для кластера (много нод, общий redis) — см. LiveKit distributed
-  deployment; `redis` уже в стеке.
-- `max_participants` per-room навязывается через RoomService CreateRoom — token-svc
-  сейчас выдаёт токен на auto-create комнату; жёсткий лимит — TODO (создавать комнату
-  с лимитом до выдачи первого токена).
-- Recording/SIP — отдельные компоненты LiveKit (egress/SIP), в этот стек не входят.
+Параметры SFU задаются через `services.livekit.settings`. Например:
+
+```nix
+services.livekit.settings = {
+  port = 7890;
+  rtc = {
+    node_ip = "203.0.113.10";
+    tcp_port = 7891;
+    port_range_start = 41000;
+    port_range_end = 42000;
+  };
+  turn = {
+    tls_port = 5351;
+    relay_range_end = 39999;
+  };
+};
+```
+
+Модуль подставляет порты во внутренние URL, nginx и firewall.
+API, signaling API LiveKit и Telegram HTTP по умолчанию слушают loopback.
+Порт API — `services.meetler.port`, порт Telegram HTTP —
+`services.meetler.telegram.port` (по умолчанию 8090).
+Отключить TURN: `services.livekit.settings.turn.enabled = false;`.
+Для собственного firewall: `services.meetler.openFirewall = false;`.
+
+## Данные и диагностика
+
+Палаты, звуки, портреты и их метаданные лежат в `ROOMS_DIR`.
+В NixOS это `/var/lib/meetler/rooms`; `services.meetler.stateDirectory`
+меняет имя каталога под `/var/lib`. В Compose данные находятся в volume `rooms`.
+Если API не может создать каталог, он пробует временное хранилище и пишет
+об этом в журнал; временные данные не сохраняются между перезапусками.
+
+`/healthz` возвращает статус процесса API и не проверяет доступность LiveKit.
+Голоса и привязки Telegram-чатов к палатам хранятся в памяти.
+Логи NixOS: `journalctl -u meetler-api -u meetler-tgbridge -u livekit`.
+
+## Telegram
+
+- `/help` — справка; `/start` — её алиас.
+- `/palata <room>` — выбрать палату для чата; `/palata` — показать текущую.
+- `/tts <текст>` — озвучить текст; можно ответить командой на текстовое сообщение.
+- `/tovoice` в ответ на медиа — проиграть его в палате.
+- `/soundboardsave` в ответ на медиа — сохранить звук в аптечке палаты.
+- Голосовые, аудио, видео, кружки и ссылки YouTube — проиграть в выбранной палате.
+
+Явная `#палата` имеет приоритет над выбором `/palata`, затем используется
+`DEFAULT_PALATA` (по умолчанию `telegram`). Выбор общий для чата и сбрасывается
+после перезапуска бота. В группах бот обрабатывает адресованные ему сообщения:
+упоминание, ответ на его сообщение или явную палату для медиа/YouTube.
+Для получения обычных медиа в группе боту нужны права администратора или
+отключённый privacy mode через BotFather.
+
+Медиа и TTS обрезаются до 20 секунд. Это отдельный лимит от браузерной записи:
+клиент сохраняет или отправляет в Telegram последние 15 секунд микса палаты.
+Для отправки в Telegram чат должен выбрать палату через `/palata`.
+
+## Docker Compose
+
+```bash
+make keys
+# Заполни SITE_DOMAIN и TURN_DOMAIN в .env.
+mkdir -p certs
+install -m 0644 /path/to/fullchain.pem certs/turn.crt
+install -m 0600 /path/to/private.key certs/turn.key
+# Для TURN задай TURN_ENABLED=true в .env.
+make up
+```
+
+nginx использует готовые сертификаты из `certs/`. После их замены:
+`docker compose restart nginx livekit`.
+Открой TCP 80/443, ICE TCP 7881 и UDP-диапазон из `livekit/livekit.yaml.template`.
+Для TURN нужны также его TCP-порт и UDP relay-диапазон из того же файла.
+
+`docker-compose.yml` содержит необязательный профиль `telegram`. Для него
+нужен `TELEGRAM_BOT_TOKEN`; для TTS также `PIPER_MODEL` и bind mount модели
+с её JSON-конфигурацией. При включённом пароле передай тот же `APP_PASSWORD`
+в окружение tgbridge; для `/soundboardsave` задай `SOUNDSVC_URL` на API,
+доступный с хоста (по умолчанию API опубликован на `127.0.0.1:8080`).
+
+## Nix-пакеты
+
+Flake экспортирует `api`, `tgbridge` и `web`. Пакет по умолчанию — `api`.
+Go-пакеты используют `buildGoLatestModule` и кеш полных модулей. При изменении
+`go.mod` или `go.sum` пересчитай `vendorHash` в `nix/api.nix` или `nix/tgbridge.nix`.

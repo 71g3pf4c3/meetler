@@ -1,12 +1,6 @@
 package main
 
-// Сохранение пересланного медиа в звуковую аптечку палаты.
-// tgbridge качает файл из Telegram, транскодит в ogg/opus (toOgg, режется до
-// maxPlaySec — аптечка всё равно проигрывает не дольше) и заливает в token-svc
-// (POST /api/rooms/<room>/sounds, multipart file+label).
-//
-// Направление tgbridge → token-svc: token-svc хранит ФС-аптечку, он и владелец
-// загрузки. tgbridge ходит к нему по SOUNDSVC_URL (host-gateway:8080).
+// Транскодирует медиа из Telegram и загружает звук в API по SOUNDSVC_URL.
 
 import (
 	"bytes"
@@ -38,7 +32,7 @@ func (a *app) saveToSoundboard(ctx context.Context, palata, fileID, label string
 	return a.uploadSound(ctx, palata, ogg, label)
 }
 
-// uploadSound postит ogg-файл в token-svc как multipart (file + label).
+// uploadSound postит ogg-файл в api как multipart (file + label).
 func (a *app) uploadSound(ctx context.Context, palata, oggPath, label string) error {
 	f, err := os.Open(oggPath)
 	if err != nil {
@@ -48,7 +42,7 @@ func (a *app) uploadSound(ctx context.Context, palata, oggPath, label string) er
 
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	// имя файла с .ogg — token-svc берёт расширение из него для whitelist/sniff
+	// имя файла с .ogg — api берёт расширение из него для whitelist/sniff
 	fw, err := mw.CreateFormFile("file", "tg.ogg")
 	if err != nil {
 		return err
@@ -69,6 +63,13 @@ func (a *app) uploadSound(ctx context.Context, palata, oggPath, label string) er
 		return err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	cookies, err := backendCookies(c, a.soundsvcURL, os.Getenv("APP_PASSWORD"))
+	if err != nil {
+		return err
+	}
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -1,20 +1,14 @@
-# server-sdk-go/v2 требует go >= 1.26.8; nixpkgs default go = 1.26.7 → берём go_1_27.
-{ lib, buildGoModule, go_1_27 }:
+{ lib, buildGoLatestModule }:
 
-(buildGoModule.override { go = go_1_27; }) {
+buildGoLatestModule {
   pname = "meetler-tgbridge";
   version = "0.1.0";
 
-  src = lib.cleanSourceWith {
-    src = ../tgbridge;
-    filter = path: _type: let base = baseNameOf path; in
-      base != "Dockerfile";
-  };
+  src = ../tgbridge;
 
-  # пересчитай при изменении go.sum: nix build .#tgbridge выдаст ожидаемый хеш
-  vendorHash = "sha256-xZZ3Wn1L4ge2FtzWvRbDwCJSgH44g+2yZDQdB+vMvb8=";
-
-  ldflags = [ "-s" "-w" ];
+  # Cache complete modules, so new package imports can reuse existing dependencies.
+  proxyVendor = true;
+  vendorHash = "sha256-NKzwYJ1cJbJ2MqGXwl4o0bJrI8CgrfkKyR7RNeOUw2Y=";
 
   meta = with lib; {
     description = "Telegram → meetler (LiveKit) media bridge bot";

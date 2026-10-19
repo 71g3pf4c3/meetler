@@ -1,4 +1,4 @@
-.PHONY: keys render up down logs turn-cert ps
+.PHONY: keys render up down logs ps
 
 keys:              ## сгенерировать API keypair в .env
 	./scripts/gen-keys.sh
@@ -14,9 +14,6 @@ down:              ## остановить
 
 logs:              ## хвост логов
 	docker compose logs -f --tail=100
-
-turn-cert:         ## синхронизировать ACME-серт Caddy в TURN
-	./scripts/sync-turn-cert.sh
 
 ps:
 	docker compose ps

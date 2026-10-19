@@ -34,8 +34,7 @@ func isConnClosed(err error) bool {
 		strings.Contains(s, "closed")
 }
 
-// Publisher держит по одному подключению к палате и льёт в неё медиа-файлы
-// последовательно. Подключение переиспользуется; простаивающее закрывается по TTL.
+// Publisher переиспользует подключение к каждой палате и закрывает его по idle TTL.
 type Publisher struct {
 	url, apiKey, apiSecret string
 	idleTTL                time.Duration

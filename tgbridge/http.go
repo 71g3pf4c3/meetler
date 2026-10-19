@@ -1,7 +1,7 @@
 package main
 
-// HTTP-слой tgbridge: приём "15с → TG" из token-svc.
-// token-svc (за Caddy) переливает WAV-микс палаты сюда; мы транскодим в
+// HTTP-слой tgbridge: приём "15с → TG" из api.
+// api (за nginx) переливает WAV-микс палаты сюда; мы транскодим в
 // ogg/opus (ffmpeg, как и всё остальное) и постим голосовым (SendVoice) во
 // все Telegram-чаты, привязанные к этой палате (/palata <room>).
 
@@ -18,7 +18,7 @@ import (
 	tu "github.com/mymmrac/telego/telegoutil"
 )
 
-// serveHTTP поднимает внутренний HTTP-сервер (не публичный; за ним token-svc).
+// serveHTTP принимает аудио от API по заданному адресу.
 func (a *app) serveHTTP(addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tg-voice", a.handleTGVoice)

@@ -1,4 +1,4 @@
-# Dev-override: Caddy в HTTP на :8088 (без TLS/ACME) + LiveKit анонсирует 127.0.0.1.
+# Dev-override: nginx в HTTP на :8088 (без TLS/ACME) + LiveKit анонсирует 127.0.0.1.
 # Запуск: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 # URL: http://localhost:8088
 services:
@@ -10,9 +10,9 @@ services:
       - ./livekit/livekit.dev.yaml:/etc/livekit.yaml:ro
       - ./certs:/certs:ro
 
-  caddy:
+  nginx:
     ports: !override
       - "8088:8088"
     volumes:
-      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./nginx/default.dev.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./web:/srv/web:ro

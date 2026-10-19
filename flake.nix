@@ -19,17 +19,17 @@
       packages = forAllSystems (system:
         let pkgs = import nixpkgs { inherit system; }; in
         {
-          token-svc = pkgs.callPackage ./nix/token-svc.nix { };
+          api = pkgs.callPackage ./nix/api.nix { };
           tgbridge = pkgs.callPackage ./nix/tgbridge.nix { };
           web = mkWeb pkgs;
-          default = pkgs.callPackage ./nix/token-svc.nix { };
+          default = pkgs.callPackage ./nix/api.nix { };
         });
 
       devShells = forAllSystems (system:
         let pkgs = import nixpkgs { inherit system; }; in
         {
           default = pkgs.mkShell {
-            packages = with pkgs; [ go gopls livekit livekit-cli caddy nginx ];
+            packages = with pkgs; [ go gopls livekit livekit-cli nginx ];
           };
         });
 
@@ -38,7 +38,6 @@
       # NixOS-модуль — не зависит от system
       nixosModules.default = import ./nix/module.nix {
         inherit self;
-        mkWeb = mkWeb;
       };
       nixosModules.meetler = self.nixosModules.default;
     };
