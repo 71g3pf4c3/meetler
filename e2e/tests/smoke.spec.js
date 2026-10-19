@@ -24,8 +24,10 @@ test.describe('приёмное отделение (сайт открыт)', () 
     await expect(page.locator('#stage')).toBeHidden();
   });
 
-  test('tag cloud МКБ-10 рендерится синхронно (без сети)', async ({ page }) => {
+  test('tag cloud МКБ-10 рендерится (в раскрытом details)', async ({ page }) => {
     await page.goto('/');
+    // облако внутри закрытого <details id="dxCloud"> — открываем как юзер
+    await page.locator('#dxCloud summary').click();
     await expect(page.locator('#tagCloud a').first()).toBeVisible();
     expect(await page.locator('#tagCloud a').count()).toBeGreaterThan(10);
   });
