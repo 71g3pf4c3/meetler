@@ -303,6 +303,9 @@ function attachTrack(participant, track) {
     // переприменить выбранную громкость (ползунок могли выставить до attach;
     // буст >100% требует живого mediaStreamTrack, который появился только сейчас)
     applyTileVolume(t);
+    // «тишина»: аудио tgbridge (TG-медиа/YouTube) — декоративный звук, глушим.
+    // ПОСЛЕ applyTileVolume — иначе он перезапишет muted.
+    if (decorMuted && t.identity === 'tgbridge') el.muted = true;
     // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
     // Главный рычаг latency на стороне получателя (экономит 50-150ms).
     try {
@@ -586,11 +589,36 @@ function broadcastSfxUpdate() {
   } catch (_) {}
 }
 
+// --- «ТИШИНА»: мут всех ДЕКОРАТИВНЫХ звуков, голоса людей остаются ---
+// Глушим: звук.аптечку (локальный монитор), джинглы welcome/farewell,
+// аудио tgbridge (TG-медиа/YouTube-озвучку), тварей (fly/roach).
+// НЕ глушим: микрофоны участников (тайлы с vol-ползунком).
+// Состояние персональное (localStorage), отправку звуков другим не трогаем.
+let decorMuted = localStorage.getItem('meetlerDecorMuted') === '1';
+window.__meetlerDecorMuted = decorMuted; // читает critters.js (fly/roach)
+
+function setDecorMuted(v) {
+  decorMuted = v;
+  window.__meetlerDecorMuted = v;
+  localStorage.setItem('meetlerDecorMuted', v ? '1' : '0');
+  const btn = $('quietBtn');
+  if (btn) {
+    btn.classList.toggle('on', v);
+    btn.textContent = v ? '🔇 ТИШИНА ВКЛ' : '🔇 Тишина';
+  }
+  // аудио tgbridge-тайлов: mute/unmute
+  for (const t of tiles.values()) {
+    if (t.identity === 'tgbridge' && t.audioEl) t.audioEl.muted = v;
+  }
+  // текущий играющий звук аптечки: глушим/возвращаем локальный монитор
+  if (sfxMonitorGain) sfxMonitorGain.gain.value = v ? 0 : sbVolume();
+}
+
 // playCue: проиграть джингл палаты (welcome/farewell). Сначала HEAD-проверка
 // кастомного (надёжнее, чем ловить 404 через <audio>.onerror, который на
 // текстовый 404-ответ срабатывает не всегда); нет кастома → дефолтный файл.
 async function playCue(kind, defaultUrl) {
-  if (!room) return;
+  if (!room || decorMuted) return;
   const vol = sbVolume();
   if (vol <= 0) return; // уважаем индивидуальный mute аптечки
   let url = defaultUrl;
@@ -853,7 +881,7 @@ async function playUrlToRoom(url, btnEl, burstId) {
     src.connect(roomGain);
     roomGain.connect(dest);          // в палату (через бёрст-усиление)
     const monitor = sfxCtx.createGain();
-    monitor.gain.value = sbVolume(); // индивидуальная громкость (у себя)
+    monitor.gain.value = decorMuted ? 0 : sbVolume(); // индивидуальная громкость (у себя); при «тишине» — 0
     sfxMonitorGain = monitor;        // чтобы ползунок менял её НА ЛЕТУ
     src.connect(monitor);
     monitor.connect(sfxCtx.destination); // себе в колонки
@@ -1787,3 +1815,8 @@ function stopStats() {
   statsTimer = null;
   $('stats').textContent = '';
 }
+
+// большая красная «тишина»: мут всех декоративных звуков (состояние из localStorage).
+// Здесь, в конце: все let-объявления (sfxMonitorGain и пр.) уже позади.
+setDecorMuted(decorMuted);
+$('quietBtn').onclick = () => setDecorMuted(!decorMuted);

@@ -193,6 +193,7 @@ func main() {
 		cfg.apiKey, cfg.apiSecret,
 		getEnv("ROOMS_DIR", "/data/rooms"),
 		os.Getenv("TGBRIDGE_URL"), // пусто — мост не настроен
+		getEnv("PROTECTED_ROOMS", "tishina"), // тихие палаты: без бота, не закрываются
 	)
 	cfg.rooms = roomsSvc
 	if !roomsSvc.ok {

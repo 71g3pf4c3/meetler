@@ -96,6 +96,11 @@ func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 		http.Error(w, "bad kind/target", http.StatusBadRequest)
 		return
 	}
+	// тихую (protected) палату закрыть голосованием нельзя
+	if req.Kind == "room" && vs.rs.isProtected(req.Target) {
+		http.Error(w, "тихая палата не закрывается", http.StatusForbidden)
+		return
+	}
 	voter := strings.TrimSpace(req.Voter)
 	if l := len(voter); l < 1 || l > 64 {
 		http.Error(w, "bad voter", http.StatusBadRequest)

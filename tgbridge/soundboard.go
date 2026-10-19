@@ -14,6 +14,9 @@ import (
 )
 
 func (a *app) saveToSoundboard(ctx context.Context, palata, fileID, label string) error {
+	if a.isProtected(palata) {
+		return a.errProtected(palata)
+	}
 	dir, cleanup, err := tmpDir()
 	if err != nil {
 		return err

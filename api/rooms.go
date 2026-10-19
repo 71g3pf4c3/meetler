@@ -33,9 +33,28 @@ type roomService struct {
 	votes       *voteStore
 	tgbridgeURL string // база tgbridge HTTP (для "15с → TG"); "" = мост не настроен
 	ok          bool   // root доступен; иначе /api/rooms* → 503 (токены и кик работают)
+	protected   map[string]bool
 }
 
-func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL string) *roomService {
+// parseProtectedRooms: csv → set валидных имён палат. Тихие (protected) палаты:
+// всегда видны в списке, их нельзя закрыть (голосование/DELETE), tgbridge в
+// них не публикует. Дефолт — "tishina".
+func parseProtectedRooms(csv string) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range strings.Split(csv, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" && validRoom(s) {
+			out[s] = true
+		}
+	}
+	return out
+}
+
+func (rs *roomService) isProtected(room string) bool {
+	return rs.protected[room]
+}
+
+func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL, protectedCSV string) *roomService {
 	if root == "" {
 		root = "/data/rooms"
 	}
@@ -57,6 +76,7 @@ func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL string) *roomSer
 		sb:          &soundboard{root: root},
 		av:          &avatarStore{root: root},
 		tgbridgeURL: tgbridgeURL,
+		protected:   parseProtectedRooms(protectedCSV),
 	}
 	rs.ok = dirWritable(root)
 	rs.votes = newVoteStore(rs)
@@ -184,6 +204,20 @@ func (rs *roomService) handleRooms(w http.ResponseWriter, r *http.Request) {
 			out = append(out, roomInfo{Name: name, Participants: lr.participants, CreatedAt: lr.createdAt})
 		}
 	}
+	// тихие (protected) палаты — персистентные: всегда в списке, даже если
+	// каталога нет и в ней никто не сидит (появится при первом входе)
+	for name := range rs.protected {
+		found := false
+		for i := range out {
+			if out[i].Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, roomInfo{Name: name, Participants: 0, CreatedAt: 0})
+		}
+	}
 	// популярные сверху, дальше по алфавиту — стабильный порядок для UI
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Participants != out[j].Participants {
@@ -200,7 +234,12 @@ func (rs *roomService) handleRooms(w http.ResponseWriter, r *http.Request) {
 // Каскад: DeleteRoom выписывает всех участников (best-effort — если SFU
 // недоступен, в палате и так никого нет), RemoveAll сносит каталог палаты
 // со ВСЕМИ её звуками и портретами. Идемпотентно: несуществующая палата → 204.
+// Тихие (protected) палаты закрыть нельзя.
 func (rs *roomService) deleteRoom(w http.ResponseWriter, _ *http.Request, room string) {
+	if rs.isProtected(room) {
+		http.Error(w, "тихая палата не закрывается", http.StatusForbidden)
+		return
+	}
 	rs.closeRoom(room)
 	w.WriteHeader(http.StatusNoContent)
 }

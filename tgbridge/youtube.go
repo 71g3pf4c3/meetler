@@ -91,6 +91,9 @@ func downloadYouTube(ctx context.Context, link, dir string) (string, error) {
 
 // streamYouTube: ссылка → скачать → toVideo → PublishVideo в палату.
 func (a *app) streamYouTube(ctx context.Context, palata, link string) error {
+	if a.isProtected(palata) {
+		return a.errProtected(palata)
+	}
 	// очередь: YouTube тоже под лимитом (yt-dlp + ffmpeg тяжёлые, не плодим параллель)
 	release, ok := a.acquireMedia()
 	if !ok {

@@ -173,9 +173,20 @@ type app struct {
 	// mediaSem ограничивает одновременные публикации медиа в палаты (/tovoice,
 	// пересланное медиа): не более cap(mediaSem) разом. Защита от спама.
 	mediaSem chan struct{}
+	// protected — тихие палаты (env PROTECTED_ROOMS): бот в них НЕ публикует
+	// (медиа/TTS/soundboardsave отклоняются понятной ошибкой).
+	protected map[string]bool
 }
 
 const maxConcurrentMedia = 3 // не более 3 медиа-публикаций одновременно
+
+// isProtected: тихая палата — без бота.
+func (a *app) isProtected(palata string) bool { return a.protected[palata] }
+
+// errProtected — внятный отказ для юзера.
+func (a *app) errProtected(palata string) error {
+	return fmt.Errorf("палата %s — тихая, бот туда не ходит", palata)
+}
 
 // acquireMedia неблокирующе занимает слот очереди медиа. ok=false → очередь
 // занята (уже maxConcurrentMedia в работе). release() освобождает слот.
@@ -223,6 +234,13 @@ func main() {
 		store:       newPalataStore(),
 		soundsvcURL: env("SOUNDSVC_URL", "http://host.docker.internal:8080"),
 		mediaSem:    make(chan struct{}, maxConcurrentMedia),
+	}
+	// тихие палаты (тот же env, что у api; дефолт "tishina")
+	a.protected = map[string]bool{}
+	for _, s := range strings.Split(env("PROTECTED_ROOMS", "tishina"), ",") {
+		if s = strings.TrimSpace(s); s != "" && palataRe.MatchString(s) {
+			a.protected[s] = true
+		}
 	}
 	log.Printf("tgbridge up as @%s, default palata=%s, tts=%v", a.me, cfg.defPalata, a.tts.enabled())
 
@@ -598,6 +616,9 @@ func (a *app) cleanText(s string) string {
 var errQueueFull = fmt.Errorf("очередь занята: уже %d медиа играет, попробуй через пару секунд", maxConcurrentMedia)
 
 func (a *app) streamFile(ctx context.Context, palata, fileID string, isVideo bool) error {
+	if a.isProtected(palata) {
+		return a.errProtected(palata)
+	}
 	// очередь: не более maxConcurrentMedia публикаций разом (/tovoice, медиа)
 	release, ok := a.acquireMedia()
 	if !ok {
@@ -630,6 +651,9 @@ func (a *app) streamFile(ctx context.Context, palata, fileID string, isVideo boo
 }
 
 func (a *app) streamTTS(ctx context.Context, palata, text string) error {
+	if a.isProtected(palata) {
+		return a.errProtected(palata)
+	}
 	// очередь: TTS тоже под лимитом (иначе спам /tts → N piper-процессов + коннектов)
 	release, ok := a.acquireMedia()
 	if !ok {
