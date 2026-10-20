@@ -239,6 +239,15 @@
       padding: 0 4px; font-size: 11px; line-height: 14px;
       background: #e6c9c9; border: 1px solid #a00; color: #800000;
     }
+    /* hard mute: заглушить участника у себя (под киком, правый угол) */
+    .tile .hmute {
+      position: absolute; top: 22px; right: 4px; z-index: 2;
+      padding: 0 4px; font-size: 11px; line-height: 14px;
+      background: #d9d9d9; border: 1px solid #666; color: #333;
+    }
+    .tile .hmute.on {
+      background: #8a8a8a; border-color: #444; color: #fff;
+    }
     /* клик по трансляции разворачивает её; явная кнопка — в левом верхнем углу */
     .tile { cursor: zoom-in; }
     .tile .maxbtn {

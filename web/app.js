@@ -177,11 +177,20 @@ function ensureTile(participant) {
 
   addMaxControls(el); // кнопка разворота + клик по тайлу = на всё окно
 
+  // hard mute: заглушить ЭТОГО участника у себя в один клик. Поверх слайдера
+  // громкости (приоритет кнопки); на остальных не влияет; сессионный.
+  const hm = document.createElement('button');
+  hm.className = 'hmute';
+  hm.textContent = '🔇';
+  hm.title = 'hard mute: заглушить у себя';
+  hm.onclick = () => setHardMute(t, !t.hardMuted);
+  el.appendChild(hm);
+
   grid.appendChild(el);
   t = {
-    el, videoEl: null, ph, label, kickBtn: kick,
+    el, videoEl: null, ph, label, kickBtn: kick, hmuteBtn: hm,
     identity: participant.identity,
-    audioEl: null, audioTrack: null, audioVol: 1,
+    audioEl: null, audioTrack: null, audioVol: 1, hardMuted: false,
     boostCtx: null, boostSrc: null, boostGain: null, // WebAudio граф для >100%
   };
   vol.addEventListener('input', () => {
@@ -190,6 +199,31 @@ function ensureTile(participant) {
   });
   tiles.set(participant.sid, t);
   return t;
+}
+
+// setHardMute: toggle жёсткого мута участника (у себя). Хранится на тайле —
+// сессионный, как громкость: identity анонима между заходами не стабилен.
+function setHardMute(t, on) {
+  t.hardMuted = on;
+  if (t.hmuteBtn) {
+    t.hmuteBtn.textContent = on ? '🔈' : '🔇';
+    t.hmuteBtn.classList.toggle('on', on);
+    t.hmuteBtn.title = on ? 'разрешить звук (hard mute включён)' : 'hard mute: заглушить у себя';
+  }
+  applyTileAudioState(t);
+}
+
+// applyTileAudioState: полная реконструкция аудио-состояния тайла —
+// громкость ползунком/бустом, затем поверх — hard mute (приоритет кнопки).
+// Единая точка: вызывается из setHardMute и при attach аудио-трека.
+function applyTileAudioState(t) {
+  applyTileVolume(t);
+  if (!t.hardMuted) return;
+  if (t.audioEl) t.audioEl.muted = true;
+  if (t.boostGain) t.boostGain.gain.value = 0;
+  if (t.audioTrack && t.audioTrack.setVolume) {
+    try { t.audioTrack.setVolume(0); } catch (_) {}
+  }
 }
 
 // applyTileVolume: индивидуальная громкость ОДНОГО участника (только у себя).
@@ -300,11 +334,11 @@ function attachTrack(participant, track) {
     }
     t.audioEl = el;
     t.audioTrack = track;
-    // переприменить выбранную громкость (ползунок могли выставить до attach;
-    // буст >100% требует живого mediaStreamTrack, который появился только сейчас)
-    applyTileVolume(t);
+    // переприменить полное аудио-состояние (ползунок/буст/hard mute могли
+    // выставить до attach; буст >100% требует живого mediaStreamTrack)
+    applyTileAudioState(t);
     // «тишина»: аудио tgbridge (TG-медиа/YouTube) — декоративный звук, глушим.
-    // ПОСЛЕ applyTileVolume — иначе он перезапишет muted.
+    // ПОСЛЕ applyTileAudioState — иначе он перезапишет muted.
     if (decorMuted && t.identity === 'tgbridge') el.muted = true;
     // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
     // Главный рычаг latency на стороне получателя (экономит 50-150ms).
