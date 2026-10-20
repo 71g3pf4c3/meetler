@@ -278,7 +278,7 @@ func main() {
 		pub:         NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
 		tts:         NewTTS(cfg.piperBin, cfg.piperModel),
 		store:       newPalataStore(os.Getenv("PALATA_STORE_FILE")),
-		soundsvcURL: env("SOUNDSVC_URL", "http://host.docker.internal:8080"),
+		soundsvcURL: env("SOUNDSVC_URL", "http://127.0.0.1:8080"),
 		mediaSem:    make(chan struct{}, maxConcurrentMedia),
 	}
 	// тихие палаты (тот же env, что у api; дефолт "tishina")

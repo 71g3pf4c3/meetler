@@ -140,30 +140,6 @@ API, signaling API LiveKit и Telegram HTTP по умолчанию слушаю
 клиент сохраняет или отправляет в Telegram последние 15 секунд микса палаты.
 Для отправки в Telegram чат должен выбрать палату через `/palata`.
 
-## Docker Compose
-
-```bash
-make keys
-# Заполни SITE_DOMAIN и TURN_DOMAIN в .env.
-mkdir -p certs
-install -m 0644 /path/to/fullchain.pem certs/turn.crt
-install -m 0600 /path/to/private.key certs/turn.key
-# Для TURN задай TURN_ENABLED=true в .env.
-make up
-```
-
-nginx использует готовые сертификаты из `certs/`. После их замены:
-`docker compose restart nginx livekit`.
-Открой TCP 80/443, ICE TCP 7881 и UDP-диапазон из `livekit/livekit.yaml.template`.
-Для TURN нужны также его TCP-порт и UDP relay-диапазон из того же файла.
-
-`docker-compose.yml` содержит необязательный профиль `telegram`. Для него
-нужен `TELEGRAM_BOT_TOKEN`; для TTS также `PIPER_MODEL` и bind mount модели
-с её JSON-конфигурацией. `PROTECTED_ROOMS` задаётся в `.env` и передаётся
-обоим сервисам. При включённом пароле передай тот же `APP_PASSWORD`
-в окружение tgbridge; для `/soundboardsave` задай `SOUNDSVC_URL` на API,
-доступный с хоста (по умолчанию API опубликован на `127.0.0.1:8080`).
-
 ## Разработка
 
 CI (GitHub Actions) на каждый push/PR: `go build`/`go vet` api и tgbridge,
