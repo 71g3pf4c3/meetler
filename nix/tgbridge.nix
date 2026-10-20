@@ -8,7 +8,7 @@ buildGoLatestModule {
 
   # Cache complete modules, so new package imports can reuse existing dependencies.
   proxyVendor = true;
-  vendorHash = "sha256-NKzwYJ1cJbJ2MqGXwl4o0bJrI8CgrfkKyR7RNeOUw2Y=";
+  vendorHash = "sha256-uJ6O7wMIOEkBt6NNNDJPs+oybAw6gY7r8Vo8UHJBZZM=";
 
   meta = with lib; {
     description = "Telegram → meetler (LiveKit) media bridge bot";

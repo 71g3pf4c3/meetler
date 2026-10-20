@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/mymmrac/telego"
 )
@@ -70,36 +73,85 @@ func loadConfig() config {
 // --- per-chat выбранная палата + обратный индекс палата→чаты ---
 // Обратный индекс нужен для "15с → TG": по имени палаты находим чаты, которые
 // на неё подписаны (командой /palata), и шлём туда голосовое.
-// Персист: если PALATA_STORE_FILE задан, привязки /palata переживают рестарт
-// (JSON {"chatID": "палата"}); пусто — прежнее in-memory поведение.
+// Персист: TG_DB_PATH (SQLite). Пусто — in-memory, привязки живут до рестарта.
+// Legacy: PALATA_STORE_FILE со старым JSON импортируется в БД при старте
+// (рядом создаётся meetler.db, исходный .json не трогается).
 type palataStore struct {
 	mu  sync.Mutex
 	m   map[int64]string              // chatID -> палата
 	rev map[string]map[int64]struct{} // палата -> set(chatID)
-	f   string                         // файл персиста; "" = не персистить
+	db  *sql.DB                       // nil = не персистить
 }
 
-func newPalataStore(file string) *palataStore {
-	s := &palataStore{m: map[int64]string{}, rev: map[string]map[int64]struct{}{}, f: file}
-	if file == "" {
+func newPalataStore(dbPath, legacyJSON string) *palataStore {
+	s := &palataStore{m: map[int64]string{}, rev: map[string]map[int64]struct{}{}}
+	dbPath = resolveDBPath(dbPath, legacyJSON)
+	if dbPath == "" {
 		return s
 	}
-	// загрузка: битый/отсутствующий файл — не фатально, начинаем с пустого
-	if b, err := os.ReadFile(file); err == nil {
-		var m map[int64]string
-		if json.Unmarshal(b, &m) == nil {
-			for k, v := range m {
-				s.m[k] = v
-				if s.rev[v] == nil {
-					s.rev[v] = map[int64]struct{}{}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
+	if err != nil {
+		log.Printf("palataStore: open %s: %v — персист отключён", dbPath, err)
+		return s
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS palatas (chat_id INTEGER PRIMARY KEY, room TEXT NOT NULL, updated_at INTEGER NOT NULL)`); err != nil {
+		log.Printf("palataStore: schema %s: %v — персист отключён", dbPath, err)
+		_ = db.Close()
+		return s
+	}
+	// legacy: старый JSON (до sqlite) — импорт поверх (INSERT OR IGNORE)
+	if legacyJSON != "" {
+		if b, err := os.ReadFile(legacyJSON); err == nil {
+			var m map[int64]string
+			if json.Unmarshal(b, &m) == nil && len(m) > 0 {
+				for k, v := range m {
+					if _, err := db.Exec(`INSERT OR IGNORE INTO palatas (chat_id, room, updated_at) VALUES (?,?,?)`, k, v, time.Now().Unix()); err == nil {
+						s.m[k] = v
+						addRev(s.rev, v, k)
+					}
 				}
-				s.rev[v][k] = struct{}{}
+				log.Printf("palataStore: legacy %s импортирован (%d привязок)", legacyJSON, len(m))
 			}
-			log.Printf("palataStore: загружено %d привязок из %s", len(s.m), file)
 		}
 	}
+	rows, err := db.Query(`SELECT chat_id, room FROM palatas`)
+	if err == nil {
+		for rows.Next() {
+			var k int64
+			var v string
+			if rows.Scan(&k, &v) == nil {
+				s.m[k] = v
+				addRev(s.rev, v, k)
+			}
+		}
+		rows.Close()
+		log.Printf("palataStore: загружено %d привязок из %s", len(s.m), dbPath)
+	}
+	s.db = db
 	return s
 }
+
+// resolveDBPath: явный TG_DB_PATH; иначе если есть legacy JSON — БД рядом с
+// ним (авто-миграция без скрытых записей в произвольные места); иначе "".
+func resolveDBPath(dbPath, legacyJSON string) string {
+	if dbPath != "" {
+		return dbPath
+	}
+	if legacyJSON != "" {
+		if _, err := os.Stat(legacyJSON); err == nil {
+			return filepath.Join(filepath.Dir(legacyJSON), "meetler.db")
+		}
+	}
+	return ""
+}
+
+func addRev(rev map[string]map[int64]struct{}, palata string, chat int64) {
+	if rev[palata] == nil {
+		rev[palata] = map[int64]struct{}{}
+	}
+	rev[palata][chat] = struct{}{}
+}
+
 func (s *palataStore) get(key int64, def string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -108,6 +160,7 @@ func (s *palataStore) get(key int64, def string) string {
 	}
 	return def
 }
+
 func (s *palataStore) set(key int64, v string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -115,25 +168,12 @@ func (s *palataStore) set(key int64, v string) {
 		delete(s.rev[old], key) // снять старую привязку
 	}
 	s.m[key] = v
-	if s.rev[v] == nil {
-		s.rev[v] = map[int64]struct{}{}
-	}
-	s.rev[v][key] = struct{}{}
-	s.persistLocked()
-}
-
-// persistLocked: сохранить привязки на диск (вызов только под локом).
-// Best-effort: ошибка записи логируется, память — источник истины.
-func (s *palataStore) persistLocked() {
-	if s.f == "" {
-		return
-	}
-	b, err := json.Marshal(s.m)
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile(s.f, b, 0o600); err != nil {
-		log.Printf("palataStore: запись %s: %v", s.f, err)
+	addRev(s.rev, v, key)
+	if s.db != nil {
+		if _, err := s.db.Exec(`INSERT INTO palatas (chat_id, room, updated_at) VALUES (?,?,?)
+			ON CONFLICT (chat_id) DO UPDATE SET room=excluded.room, updated_at=excluded.updated_at`, key, v, time.Now().Unix()); err != nil {
+			log.Printf("palataStore: запись: %v", err)
+		}
 	}
 }
 
@@ -277,7 +317,7 @@ func main() {
 		meID:        me.ID,
 		pub:         NewPublisher(cfg.lkURL, cfg.lkKey, cfg.lkSecret, 60*time.Second),
 		tts:         NewTTS(cfg.piperBin, cfg.piperModel),
-		store:       newPalataStore(os.Getenv("PALATA_STORE_FILE")),
+		store:       newPalataStore(os.Getenv("TG_DB_PATH"), os.Getenv("PALATA_STORE_FILE")),
 		soundsvcURL: env("SOUNDSVC_URL", "http://127.0.0.1:8080"),
 		mediaSem:    make(chan struct{}, maxConcurrentMedia),
 	}

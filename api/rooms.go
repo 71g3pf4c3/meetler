@@ -28,11 +28,12 @@ type roomInfo struct {
 type roomService struct {
 	client      *lksdk.RoomServiceClient
 	root        string // ROOMS_DIR
+	db          *roomDB
 	sb          *soundboard
 	av          *avatarStore
 	votes       *voteStore
 	tgbridgeURL string // база tgbridge HTTP (для "15с → TG"); "" = мост не настроен
-	ok          bool   // root доступен; иначе /api/rooms* → 503 (токены и кик работают)
+	ok          bool   // БД открыта; иначе /api/rooms* → 503 (токены и кик работают)
 	protected   map[string]bool
 }
 
@@ -73,46 +74,37 @@ func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL, protectedCSV st
 	rs := &roomService{
 		client:      client,
 		root:        root,
-		sb:          &soundboard{root: root},
-		av:          &avatarStore{root: root},
 		tgbridgeURL: tgbridgeURL,
 		protected:   parseProtectedRooms(protectedCSV),
 	}
-	rs.ok = dirWritable(root)
+	// SQLite-хранилище: звуки/портреты/джинглы + миграция со старой файловой
+	// структуры (ROOMS_DIR/<room>/{sounds,avatars}, джинглы в корне палаты).
+	db, err := openRoomDB(filepath.Join(root, "meetler.db"))
+	if err != nil {
+		log.Printf("ERROR: open db в %q: %v — хранилище отключено", root, err)
+		return rs
+	}
+	db.migrateFromFS(root)
+	rs.db = db
+	rs.sb = &soundboard{db: db}
+	rs.av = &avatarStore{db: db}
+	rs.ok = true
 	rs.votes = newVoteStore(rs)
 	return rs
 }
 
-// dirWritable: каталог существует и в него реально можно писать (а не только
-// MkdirAll прошёл). Ловит кейсы root-owned volume под nonroot-процессом.
-func dirWritable(dir string) bool {
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return false
-	}
-	probe := filepath.Join(dir, ".wtest")
-	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
-		log.Printf("WARNING: %q не доступен на запись: %v", dir, err)
-		return false
-	}
-	_ = os.Remove(probe)
-	return true
-}
+// dirWritable больше не используется (проверку записи делает openRoomDB):
+// оставлена проверка доступности root в newRoomService через MkdirAll.
 
 func (rs *roomService) roomDir(room string) string { return filepath.Join(rs.root, room) }
 
-// ensureRoom регистрирует палату в реестре (создаёт каталог + подкаталоги
-// звуков/портретов). Best-effort: ошибка не мешает входу — палата просто
-// останется неперсистентной, до следующей попытки.
+// ensureRoom регистрирует палату в реестре (БД). Best-effort: ошибка не
+// мешает входу — палата просто останется неперсистентной до следующей попытки.
 func (rs *roomService) ensureRoom(room string) {
 	if !rs.ok {
 		return
 	}
-	if err := os.MkdirAll(filepath.Join(rs.roomDir(room), soundsSub), 0o755); err != nil {
-		log.Printf("ensureRoom(%s): %v", room, err)
-	}
-	if err := os.MkdirAll(filepath.Join(rs.roomDir(room), avatarsSub), 0o755); err != nil {
-		log.Printf("ensureRoom(%s): %v", room, err)
-	}
+	rs.db.roomRegister(room)
 }
 
 // identity участников: серверный anon-<hex> или tgbridge — безопасный набор
@@ -160,11 +152,7 @@ func (rs *roomService) handleRooms(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "room storage disabled", http.StatusServiceUnavailable)
 		return
 	}
-	entries, err := os.ReadDir(rs.root)
-	if err != nil {
-		http.Error(w, "read dir", http.StatusInternalServerError)
-		return
-	}
+	registry := rs.db.roomNames()
 
 	// живой статус — best-effort: SFU лёг → показываем реестр с нулями
 	type liveRoom struct {
@@ -182,17 +170,12 @@ func (rs *roomService) handleRooms(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ListRooms: %v (показываю реестр без живого счётчика)", err)
 	}
 
-	out := make([]roomInfo, 0, len(entries))
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() || !validRoom(name) {
+	out := make([]roomInfo, 0, len(registry))
+	for name, createdAt := range registry {
+		if !validRoom(name) {
 			continue
 		}
 		lr := live[name]
-		createdAt := time.Now().Unix()
-		if fi, err := e.Info(); err == nil {
-			createdAt = fi.ModTime().Unix()
-		}
 		out = append(out, roomInfo{
 			Name: name, Participants: lr.participants, CreatedAt: createdAt,
 		})
@@ -245,13 +228,18 @@ func (rs *roomService) deleteRoom(w http.ResponseWriter, _ *http.Request, room s
 }
 
 // closeRoom: каскадное закрытие палаты (без http). DeleteRoom выписывает всех
-// (best-effort — если SFU недоступен, в палате и так никого нет), RemoveAll
-// сносит каталог со звуками/портретами. Переиспользуется голосованием.
+// (best-effort — если SFU недоступен, в палате и так никого нет), содержимое
+// палаты сносится из БД + каталог старого файлового хранилища (если остался
+// после миграции). Переиспользуется голосованием.
 func (rs *roomService) closeRoom(room string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := rs.client.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room}); err != nil {
 		log.Printf("DeleteRoom(%s): %v (удаляю из реестра в любом случае)", room, err)
+	}
+	if rs.db != nil {
+		rs.db.roomDeleteCascade(room)
+		rs.db.roomUnregister(room)
 	}
 	if err := os.RemoveAll(rs.roomDir(room)); err != nil {
 		log.Printf("closeRoom RemoveAll(%s): %v", room, err)
@@ -276,6 +264,9 @@ func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "bad room", http.StatusBadRequest)
 		return
 	}
+	// любое обращение к палате регистрирует её в реестре (как раньше —
+	// созданием каталога: залить звук можно и до первого входа)
+	rs.ensureRoom(parts[0])
 	room := parts[0]
 	if len(parts) == 1 {
 		if r.Method != http.MethodDelete {

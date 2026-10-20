@@ -150,7 +150,7 @@ in
         TGBRIDGE_HTTP_ADDR = "127.0.0.1:${toString cfg.telegram.port}";
         XDG_CACHE_HOME = "/var/cache/meetler-tgbridge";
         PROTECTED_ROOMS = cfg.protectedRooms;
-        PALATA_STORE_FILE = "/var/lib/meetler-tgbridge/palatas.json";
+        TG_DB_PATH = "/var/lib/meetler-tgbridge/meetler.db";
       }
       // lib.optionalAttrs (cfg.telegram.piperModel != null) {
         PIPER_MODEL = toString cfg.telegram.piperModel;

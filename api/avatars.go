@@ -1,16 +1,15 @@
 package main
 
-// Портреты палат хранятся в ROOMS_DIR/<room>/avatars.
+// Портреты палат: CRUD через roomDB (SQLite).
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 )
 
 const (
@@ -20,8 +19,7 @@ const (
 )
 
 type avatarStore struct {
-	root string // ROOMS_DIR; портреты палаты: root/<room>/avatars
-	mu   sync.Mutex
+	db *roomDB
 }
 
 type avatarMeta struct {
@@ -30,42 +28,8 @@ type avatarMeta struct {
 	Likes int    `json:"likes"` // число лайков (чем больше — тем реже выдаётся)
 }
 
-func (as *avatarStore) dir(room string) string {
-	return filepath.Join(as.root, room, avatarsSub)
-}
-
 func avatarURL(room, id string) string {
 	return "/api/rooms/" + room + "/" + avatarsSub + "/" + id
-}
-
-// Лайки портрета хранятся рядом: <dir>/<id>.likes — по одному voter-cid на
-// строку (дедуп на браузер). Чем больше лайков — тем реже портрет выдаётся
-// (вес в раздаче клиент считает по этому числу).
-func (as *avatarStore) likesPath(room, id string) string {
-	return filepath.Join(as.dir(room), id+".likes")
-}
-
-func (as *avatarStore) readLikers(room, id string) map[string]bool {
-	set := map[string]bool{}
-	b, err := os.ReadFile(as.likesPath(room, id))
-	if err != nil {
-		return set
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if v := strings.TrimSpace(line); v != "" {
-			set[v] = true
-		}
-	}
-	return set
-}
-
-func (as *avatarStore) writeLikers(room, id string, set map[string]bool) error {
-	var sb strings.Builder
-	for v := range set {
-		sb.WriteString(v)
-		sb.WriteByte('\n')
-	}
-	return os.WriteFile(as.likesPath(room, id), []byte(sb.String()), 0o644)
 }
 
 // разрешённые расширения -> content-type
@@ -93,45 +57,12 @@ func sniffImage(head []byte, ext string) bool {
 	return false
 }
 
-func (as *avatarStore) count(room string) int {
-	entries, _ := os.ReadDir(as.dir(room))
-	n := 0
-	for _, e := range entries {
-		if !e.IsDir() && avatarExt[strings.ToLower(filepath.Ext(e.Name()))] != "" {
-			n++
-		}
-	}
-	return n
-}
-
 // GET /api/rooms/<room>/avatars -> список портретов палаты.
 // ПОРЯДОК СТАБИЛЕН (сортировка по id) — от него зависит детерминированный
 // выбор аватарки хешем на клиентах. Несуществующая палата — пустой список.
 func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request, room string) {
-	entries, err := os.ReadDir(as.dir(room))
-	if err != nil {
-		if os.IsNotExist(err) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte("[]"))
-			return
-		}
-		http.Error(w, "read dir", http.StatusInternalServerError)
-		return
-	}
-	out := make([]avatarMeta, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if _, ok := avatarExt[strings.ToLower(filepath.Ext(name))]; !ok {
-			continue
-		}
-		out = append(out, avatarMeta{ID: name, URL: avatarURL(room, name), Likes: len(as.readLikers(room, name))})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(as.db.avatarList(room))
 }
 
 // POST /api/rooms/<room>/avatars (multipart: file) -> загрузка. Открыто для
@@ -139,8 +70,6 @@ func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request, room string)
 //   - размер <= maxAvatarBytes
 //   - расширение из whitelist И magic bytes совпадают
 //   - потолок maxAvatars файлов на палату
-//
-// Каталог палаты создаётся на лету: принести портрет можно и до входа.
 func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAvatarBytes+4096)
 	if err := r.ParseMultipartForm(maxAvatarBytes); err != nil {
@@ -168,16 +97,17 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room strin
 		return
 	}
 
-	as.mu.Lock()
-	defer as.mu.Unlock()
-
-	if as.count(room) >= maxAvatars {
+	if as.db.avatarCount(room) >= maxAvatars {
 		http.Error(w, "avatar pool full (limit reached)", http.StatusConflict)
 		return
 	}
-
-	id, err := writeFileLimited(as.dir(room), ext, head, file, maxAvatarBytes)
+	data, err := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(head), file), maxAvatarBytes))
 	if err != nil {
+		http.Error(w, "read", http.StatusInternalServerError)
+		return
+	}
+	id := randHex() + ext
+	if err := as.db.avatarPut(room, id, ext, data); err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
@@ -190,84 +120,47 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room strin
 // GET /api/rooms/<room>/avatars/<id> -> отдать картинку.
 func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request, room, id string) {
 	// path traversal: только базовое имя с известным расширением
-	if id == "" || id != filepath.Base(id) {
+	if id == "" || id != filepath.Base(id) || avatarExt[strings.ToLower(filepath.Ext(id))] == "" {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	ct, ok := avatarExt[strings.ToLower(filepath.Ext(id))]
-	if !ok {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	f, err := os.Open(filepath.Join(as.dir(room), id))
-	if err != nil {
+	ext, data, at, ok := as.db.avatarGet(room, id)
+	ct, known := avatarExt[strings.ToLower(ext)]
+	if !ok || !known {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	http.ServeContent(w, r, id, fi.ModTime(), f)
+	serveBlob(w, r, id, ct, "public, max-age=31536000, immutable", data, at)
 }
 
 // DELETE /api/rooms/<room>/avatars/<id> -> убрать картинку из галереи палаты.
 // Намеренно без авторизации: что "лишнее" решает любой пациент.
 // (id — серверный рандом, не пользовательская строка: безопасно)
 func (as *avatarStore) remove(w http.ResponseWriter, _ *http.Request, room, id string) {
-	if id == "" || id != filepath.Base(id) {
+	if id == "" || id != filepath.Base(id) || avatarExt[strings.ToLower(filepath.Ext(id))] == "" {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if _, ok := avatarExt[strings.ToLower(filepath.Ext(id))]; !ok {
-		http.Error(w, "bad id", http.StatusBadRequest)
+	if err := as.db.avatarDelete(room, id); err != nil {
+		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
-	as.mu.Lock()
-	defer as.mu.Unlock()
-	if err := os.Remove(filepath.Join(as.dir(room), id)); err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "remove", http.StatusInternalServerError)
-		return
-	}
-	_ = os.Remove(as.likesPath(room, id)) // лайки следом
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// delete удаляет файл портрета палаты. Внутренний метод, переиспользуется
-// голосованием (votes.go). Нет файла → не ошибка (идемпотентно).
+// delete удаляет портрет палаты (+лайки). Внутренний метод, переиспользуется
+// голосованием (votes.go). Нет записи → не ошибка (идемпотентно).
 func (as *avatarStore) delete(room, id string) error {
-	if id == "" || id != filepath.Base(id) {
+	if id == "" || id != filepath.Base(id) || avatarExt[strings.ToLower(filepath.Ext(id))] == "" {
 		return os.ErrInvalid
 	}
-	if _, ok := avatarExt[strings.ToLower(filepath.Ext(id))]; !ok {
-		return os.ErrInvalid
-	}
-	as.mu.Lock()
-	defer as.mu.Unlock()
-	err := os.Remove(filepath.Join(as.dir(room), id))
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	_ = os.Remove(as.likesPath(room, id)) // лайки следом
-	return nil
+	return as.db.avatarDelete(room, id)
 }
 
 // POST /api/rooms/<room>/avatars/<id>/like {voter} -> переключить лайк.
 // Возвращает {likes, liked}. Дедуп по voter (анонимный client-id браузера).
 func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, room, id string) {
-	if id == "" || id != filepath.Base(id) {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	if _, ok := avatarExt[strings.ToLower(filepath.Ext(id))]; !ok {
+	if id == "" || id != filepath.Base(id) || avatarExt[strings.ToLower(filepath.Ext(id))] == "" {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
@@ -283,27 +176,14 @@ func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, room, id str
 		http.Error(w, "bad voter", http.StatusBadRequest)
 		return
 	}
-	as.mu.Lock()
-	defer as.mu.Unlock()
-	// портрет должен существовать
-	if _, err := os.Stat(filepath.Join(as.dir(room), id)); err != nil {
+	likes, liked, ok := as.db.avatarLikeToggle(room, id, voter)
+	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	set := as.readLikers(room, id)
-	liked := !set[voter] // toggle
-	if liked {
-		set[voter] = true
-	} else {
-		delete(set, voter)
-	}
-	if err := as.writeLikers(room, id, set); err != nil {
-		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]any{"likes": len(set), "liked": liked})
+	_ = json.NewEncoder(w).Encode(map[string]any{"likes": likes, "liked": liked})
 }
 
 // dispatch роутит /api/rooms/<room>/avatars[/<id>[/like]] по методу.

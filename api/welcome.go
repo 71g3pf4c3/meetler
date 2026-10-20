@@ -1,60 +1,33 @@
 package main
 
-// Приветствие и прощание палаты: ROOMS_DIR/<room>/<kind>.<ext>.
-// При отсутствии файла клиент использует web/welcome.mp3 или web/farewell.mp3.
+// Приветствие и прощание палаты (джинглы): cues-таблица roomDB.
+// При отсутствии кастомного джингла клиент использует web/welcome.mp3
+// или web/farewell.mp3.
 
 import (
 	"bytes"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-// cueKinds — допустимые имена джинглов (защита от произвольного имени файла).
+// cueKinds — допустимые имена джинглов (защита от произвольного kind).
 var cueKinds = map[string]bool{"welcome": true, "farewell": true}
-
-func (sb *soundboard) cuePath(room, kind string) (string, bool) {
-	dir := filepath.Join(sb.root, room)
-	for ext := range soundExt {
-		p := filepath.Join(dir, kind+ext)
-		if _, err := os.Stat(p); err == nil {
-			return p, true
-		}
-	}
-	return "", false
-}
 
 // GET /api/rooms/<room>/<kind> -> кастомный джингл (или 404 → фронт играет дефолт)
 func (sb *soundboard) cueServe(w http.ResponseWriter, r *http.Request, room, kind string) {
-	p, ok := sb.cuePath(room, kind)
+	ext, data, ok := sb.db.cueGet(room, kind)
 	if !ok {
 		http.Error(w, "no custom "+kind, http.StatusNotFound)
 		return
 	}
-	f, err := os.Open(p)
-	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", soundExt[strings.ToLower(filepath.Ext(p))])
+	// кэш: одна «ячейка» на вид — перезагрузка с новым содержимым должна
+	// доехать до клиентов, поэтому no-cache (как в прежней версии)
+	w.Header().Set("Content-Type", soundExt[ext])
 	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeContent(w, r, filepath.Base(p), fi.ModTime(), f)
-}
-
-// removeCueFiles сносит джингл kind ЛЮБОГО расширения — одна «ячейка» на вид.
-func (sb *soundboard) removeCueFiles(room, kind string) {
-	dir := filepath.Join(sb.root, room)
-	for e := range soundExt {
-		_ = os.Remove(filepath.Join(dir, kind+e))
-	}
+	http.ServeContent(w, r, kind+ext, time.Time{}, bytes.NewReader(data))
 }
 
 // POST /api/rooms/<room>/<kind> (multipart: file) -> задать джингл.
@@ -83,37 +56,24 @@ func (sb *soundboard) cueUpload(w http.ResponseWriter, r *http.Request, room, ki
 		http.Error(w, "file content is not valid audio for this extension", http.StatusBadRequest)
 		return
 	}
-
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-
-	dir := filepath.Join(sb.root, room)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		http.Error(w, "store", http.StatusInternalServerError)
-		return
-	}
-	// снести предыдущий джингл этого вида любого расширения — одна ячейка
-	sb.removeCueFiles(room, kind)
-	dst, err := os.Create(filepath.Join(dir, kind+ext))
+	data, err := io.ReadAll(io.LimitReader(io.MultiReader(bytes.NewReader(head), file), maxSoundBytes))
 	if err != nil {
+		http.Error(w, "read", http.StatusInternalServerError)
+		return
+	}
+	if err := sb.db.cueSet(room, kind, ext, data); err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
-	lr := io.LimitReader(io.MultiReader(bytes.NewReader(head), file), maxSoundBytes)
-	if _, err := io.Copy(dst, lr); err != nil {
-		_ = dst.Close()
-		http.Error(w, "write", http.StatusInternalServerError)
-		return
-	}
-	_ = dst.Close()
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // DELETE /api/rooms/<room>/<kind> -> вернуть дефолтный джингл.
 func (sb *soundboard) cueDelete(w http.ResponseWriter, _ *http.Request, room, kind string) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	sb.removeCueFiles(room, kind)
+	if err := sb.db.cueDelete(room, kind); err != nil {
+		http.Error(w, "store", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
