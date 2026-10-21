@@ -189,6 +189,14 @@ in
             '';
           };
           "/twirp/".proxyPass = livekitURL;
+          # входная точка и код — всегда свежие: nginx default (Last-Modified +
+          # heuristic caching) держал в браузерах старые app.js после deploy
+          "= /index.html".extraConfig = ''
+            add_header Cache-Control "no-cache";
+          '';
+          "= /app.js".extraConfig = ''
+            add_header Cache-Control "no-cache";
+          '';
           "/".tryFiles = "$uri $uri/ /index.html";
         };
       };
