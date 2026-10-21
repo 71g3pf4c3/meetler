@@ -56,11 +56,19 @@ async function castVote(rm, kind, target) {
 }
 
 // покрасить элемент по числу голосов: 0 норма, 1 жёлтый, 2 оранжевый, 3 красный
-function applyVoteColor(el, count) {
-  el.classList.toggle('v1', count === 1);
-  el.classList.toggle('v2', count === 2);
-  el.classList.toggle('v3', count >= 3);
-  if (count > 0) el.dataset.votes = `${count}/${VOTE_THRESHOLD}`;
+// порог для ключа голосования: tgbridge (служебный мост) выписывается первым
+// голосом, пациенты — коллегиально (VOTE_THRESHOLD). Сервер — истина порога
+// (отдаёт threshold в ответе POST), здесь — догадка для GET-счётчиков.
+function voteThresholdForKey(vkey) {
+  return vkey === 'kick:tgbridge' ? 1 : VOTE_THRESHOLD;
+}
+
+function applyVoteColor(el, count, th) {
+  th = th || voteThresholdForKey(el.dataset.vkey);
+  el.classList.toggle('v3', count >= th);
+  el.classList.toggle('v2', th > 2 && count === 2 && count < th);
+  el.classList.toggle('v1', th > 1 && count === 1 && count < th);
+  if (count > 0) el.dataset.votes = `${count}/${th}`;
   else delete el.dataset.votes;
 }
 
@@ -163,11 +171,15 @@ function ensureTile(participant) {
   kick.textContent = '✕';
   kick.title = 'Голос за выписку (нужно 3)';
   kick.dataset.vkey = 'kick:' + participant.identity; // раскраска по опросу
+  // мост — служебный: первый голос выгоняет (см. voteThresholdForKey / api)
+  kick.title = participant.identity === 'tgbridge'
+    ? 'Выписать Telegram-мост (первым же голосом)'
+    : 'Голос за выписку (нужно 3)';
   kick.onclick = async () => {
     if (!room) return;
     const r = await castVote(room.name, 'kick', participant.identity);
     if (!r) { $('err').textContent = 'Голос не засчитан'; return; }
-    applyVoteColor(kick, r.done ? 3 : r.count);
+    applyVoteColor(kick, r.count, r.threshold);
     if (r.done) {
       breakTile(participant.sid);           // анимация у себя
       broadcastBreak(participant.sid);       // и у всех остальных
@@ -993,7 +1005,7 @@ async function refreshSoundboard() {
       del.onclick = async () => {
         const r = await castVote(room.name, 'sound', s.id);
         if (!r) { $('sbErr').textContent = 'Голос не засчитан'; return; }
-        applyVoteColor(del, r.done ? 3 : r.count);
+        applyVoteColor(del, r.count, r.threshold);
         if (r.done) { await refreshSoundboard(); broadcastSfxUpdate(); }
       };
       row.append(b, del);

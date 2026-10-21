@@ -9,10 +9,19 @@
       systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
 
-      # web — статика клиента как derivation (просто копия web/ в store)
+      # web — статика клиента как derivation. app.js/critters.js версионируются
+      # хэшем содержимого (?v=…): index.html (no-cache) ссылается на новый URL
+      # при любом изменении кода — браузеры держат жёсткий immutable-кэш,
+      # и при этом всегда получают свежую версию после deploy.
       mkWeb = pkgs: pkgs.runCommand "meetler-web" { } ''
         mkdir -p $out
         cp -r ${./web}/. $out/
+        ah=$(sha256sum $out/app.js | cut -c1-12)
+        ch=$(sha256sum $out/critters.js | cut -c1-12)
+        substituteInPlace $out/index.html \
+          --replace-fail "href=\"/app.js\"" "href=\"/app.js?v=$ah\"" \
+          --replace-fail "src=\"/app.js\"" "src=\"/app.js?v=$ah\"" \
+          --replace-fail "src=\"/critters.js\"" "src=\"/critters.js?v=$ch\""
       '';
     in
     {

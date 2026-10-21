@@ -84,6 +84,15 @@ type voteResponse struct {
 	Done      bool `json:"done"`
 }
 
+// thresholdFor: tgbridge — служебный участник (мост), а не пациент: его
+// выписывает ПЕРВЫЙ голос. Живого человека — только коллегиально.
+func thresholdFor(kind, target string) int {
+	if kind == "kick" && target == "tgbridge" {
+		return 1
+	}
+	return voteThreshold
+}
+
 // POST /api/rooms/<room>/votes — отдать голос. Возвращает текущий счётчик;
 // при достижении порога исполняет действие на сервере и сбрасывает голоса.
 func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
@@ -108,6 +117,7 @@ func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 	}
 
 	k := voteKey{room, req.Kind, req.Target}
+	th := thresholdFor(req.Kind, req.Target)
 
 	vs.mu.Lock()
 	if vs.v[k] == nil {
@@ -115,7 +125,7 @@ func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 	}
 	vs.v[k][voter] = time.Now()
 	n := vs.countLive(k)
-	done := n >= voteThreshold
+	done := n >= th
 	if done {
 		delete(vs.v, k) // порог взят — сбрасываем, чтобы не исполнить дважды
 	}
@@ -126,7 +136,7 @@ func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(voteResponse{Count: n, Threshold: voteThreshold, Done: done})
+	_ = json.NewEncoder(w).Encode(voteResponse{Count: n, Threshold: th, Done: done})
 }
 
 // GET /api/rooms/<room>/votes — текущие счётчики всех активных голосований

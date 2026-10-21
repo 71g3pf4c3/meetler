@@ -189,13 +189,17 @@ in
             '';
           };
           "/twirp/".proxyPass = livekitURL;
-          # входная точка и код — всегда свежие: nginx default (Last-Modified +
-          # heuristic caching) держал в браузерах старые app.js после deploy
+          # index.html — всегда с проверкой свежести; app.js/critters.js —
+          # иммутабельный кэш (версионируются ?v=<hash> при nix-сборке,
+          # старый URL после deploy больше не запрашивается)
           "= /index.html".extraConfig = ''
             add_header Cache-Control "no-cache";
           '';
           "= /app.js".extraConfig = ''
-            add_header Cache-Control "no-cache";
+            add_header Cache-Control "public, max-age=31536000, immutable";
+          '';
+          "= /critters.js".extraConfig = ''
+            add_header Cache-Control "public, max-age=31536000, immutable";
           '';
           "/".tryFiles = "$uri $uri/ /index.html";
         };
