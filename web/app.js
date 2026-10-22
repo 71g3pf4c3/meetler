@@ -260,7 +260,7 @@ function applyTileVolume(t) {
     return;
   }
   if (!t.boostCtx) {
-    t.boostCtx = new (window.AudioContext || window.webkitAudioContext)();
+    t.boostCtx = new AudioContext();
     t.boostSrc = t.boostCtx.createMediaStreamSource(new MediaStream([mst]));
     t.boostGain = t.boostCtx.createGain();
     t.boostSrc.connect(t.boostGain);
@@ -831,7 +831,7 @@ let sfxMonitorGain = null;    // активный gain локального мо
 
 async function loadBuffer(url) {
   if (sfxCache.has(url)) return sfxCache.get(url);
-  sfxCtx = sfxCtx || new (window.AudioContext || window.webkitAudioContext)();
+  sfxCtx = sfxCtx || new AudioContext();
   const res = await fetch(url);
   if (!res.ok) throw new Error('fetch ' + res.status);
   const buf = await sfxCtx.decodeAudioData(await res.arrayBuffer());
@@ -924,6 +924,13 @@ async function playUrlToRoom(url, btnEl, burstId) {
     // громкость В ПАЛАТУ масштабируется бёрстом (спам кликов → громче всем)
     const roomGain = sfxCtx.createGain();
     roomGain.gain.value = burstId ? gainForBurst(burstId) : 1;
+    // WebRTC/Opus без согласования stereo=1 отдаёт от стерео-источника только
+    // ЛЕВЫЙ канал — слушатели теряли правую половину микса («одно ухо»).
+    // Явный моно-даунмикс (L+R)/2 ДО публикации: в палату уходит полный микс.
+    // Локальный монитор ниже остаётся стерео.
+    roomGain.channelCount = 1;
+    roomGain.channelCountMode = 'explicit';
+    roomGain.channelInterpretation = 'speakers';
     src.connect(roomGain);
     roomGain.connect(dest);          // в палату (через бёрст-усиление)
     const monitor = sfxCtx.createGain();
@@ -1665,7 +1672,7 @@ document.addEventListener('keydown', (e) => {
 // На выходе .wav (мгновенно, без энкодера, корректная обрезка по сэмплам).
 const REC_WINDOW_SEC = 15;
 let recCtx = null;
-let recProc = null;                 // ScriptProcessorNode
+let recNode = null;                 // AudioWorkletNode (rec-tap)
 let recMixGain = null;              // сюда сходятся все источники
 let recRing = null;                 // Float32Array кольцевой буфер
 let recRingSize = 0;
@@ -1674,33 +1681,57 @@ let recFilled = 0;
 let recSampleRate = 48000;
 const recConnected = new WeakSet();
 
+// ringWrite: очередной блок моно-сэмплов в кольцевой буфер (вызов из worklet).
+function ringWrite(inBuf) {
+  if (!recRing) return; // race: cleanup зануляет буфер до последнего тика
+  for (let i = 0; i < inBuf.length; i++) {
+    recRing[recWritePos] = inBuf[i];
+    recWritePos = (recWritePos + 1) % recRingSize;
+    if (recFilled < recRingSize) recFilled++;
+  }
+}
+
+// initRecordMix: WebAudio-граф записи 15с. Тап — AudioWorklet (ScriptProcessor
+// — deprecated API, выкинут). Модуль воркета инлайном (Blob URL): web/
+// остаётся одним файлом без отдельной поставки. Асинхронная инициализация:
+// recMixGain создан синхронно, addToRecordMix можно звать сразу — данные
+// пойдут, как только воркет подключится (десятки мс на старте).
 function initRecordMix() {
   if (recCtx) return;
-  recCtx = new (window.AudioContext || window.webkitAudioContext)();
+  recCtx = new AudioContext();
   recSampleRate = recCtx.sampleRate;
   recRingSize = Math.ceil(recSampleRate * REC_WINDOW_SEC);
   recRing = new Float32Array(recRingSize);
   recWritePos = 0; recFilled = 0;
 
   recMixGain = recCtx.createGain();
-  recProc = recCtx.createScriptProcessor(4096, 1, 1);
-  recMixGain.connect(recProc);
-  // ScriptProcessor требует подключения к destination, иначе не тикает.
-  // Через нулевой gain, чтобы не было двойного воспроизведения/эха.
-  const mute = recCtx.createGain();
-  mute.gain.value = 0;
-  recProc.connect(mute);
-  mute.connect(recCtx.destination);
+  // весь микс — моно (как раньше ScriptProcessor(…, 1, 1)): (L+R)/2 на входе
+  recMixGain.channelCount = 1;
+  recMixGain.channelCountMode = 'explicit';
 
-  recProc.onaudioprocess = (e) => {
-    if (!recRing) return; // race: cleanup зануляет буфер до последнего тика
-    const inBuf = e.inputBuffer.getChannelData(0);
-    for (let i = 0; i < inBuf.length; i++) {
-      recRing[recWritePos] = inBuf[i];
-      recWritePos = (recWritePos + 1) % recRingSize;
-      if (recFilled < recRingSize) recFilled++;
+  const workletSrc = `
+    class RecTap extends AudioWorkletProcessor {
+      process(inputs) {
+        const ch = inputs[0] && inputs[0][0];
+        if (ch) this.port.postMessage(ch); // postMessage клонирует немедленно
+        return true;
+      }
     }
-  };
+    registerProcessor('rec-tap', RecTap);
+  `;
+  const url = URL.createObjectURL(new Blob([workletSrc], { type: 'text/javascript' }));
+  recCtx.audioWorklet.addModule(url).then(() => {
+    URL.revokeObjectURL(url);
+    recNode = new AudioWorkletNode(recCtx, 'rec-tap', { outputChannelCount: [1] });
+    recNode.port.onmessage = (e) => ringWrite(e.data);
+    recMixGain.connect(recNode);
+    // Worklet с выходом требует подключения к destination, иначе может не
+    // тикать. Через нулевой gain — без двойного воспроизведения/эха.
+    const mute = recCtx.createGain();
+    mute.gain.value = 0;
+    recNode.connect(mute);
+    mute.connect(recCtx.destination);
+  }).catch((e) => console.warn('record mix init failed:', e));
 }
 
 // подмешать произвольный MediaStreamTrack (mic/remote/goida) в микс записи
