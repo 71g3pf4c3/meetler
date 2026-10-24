@@ -17,6 +17,8 @@ const callPanels = document.querySelectorAll('#bar, #wardNav, #grid, #soundboard
 const joinButtons = document.querySelectorAll('#createBtn, #renameBtn');
 
 let room = null;
+let microphoneTrack = null;
+let playbackCtx = null;
 let joining = false;
 let leavingPage = false;
 // LiveKit disconnects on page leave; keep the outgoing call view intact.
@@ -38,12 +40,18 @@ function setCallState(state = '', error = '') {
 
 if (page.dataset.callState) setCallState(page.dataset.callState);
 
+function readCall() {
+  try { return JSON.parse(sessionStorage.getItem('meetlerCall')); } catch (_) { return null; }
+}
+
 function rememberCall(roomName) {
   sessionStorage.setItem('meetlerCall', JSON.stringify({ room: roomName, name: $('name').value.trim() }));
 }
 
 function forgetCall() {
   sessionStorage.removeItem('meetlerCall');
+  microphoneTrack?.stop();
+  microphoneTrack = null;
 }
 
 async function enterRoom(roomName = palataFromPath()) {
@@ -251,9 +259,7 @@ function ensureTile(participant) {
 
   // индивидуальная громкость ЭТОГО участника (только у себя).
   // max=300: БУСТ до 300% — чужой тайл можно "забустить" громче оригинала.
-  // >100% невозможно через <audio>.volume (капится [0,1]) — идём через
-  // WebAudio GainNode (boostTileVolume): audio-элемент глушим, звук гоним
-  // через gain. ≤100% работает по-старому (дёшево, без WebAudio).
+  // Все входящие аудиотреки участника идут через общий WebAudio GainNode.
   const vol = document.createElement('input');
   vol.type = 'range';
   vol.min = '0';
@@ -277,8 +283,7 @@ function ensureTile(participant) {
   grid.appendChild(el);
   t = {
     el, videoEl: null, ph, label, kickBtn: kick,
-    audioEl: null, audioTrack: null, audioVol: 1,
-    boostCtx: null, boostSrc: null, boostGain: null, // WebAudio граф для >100%
+    audioTracks: new Map(), audioGain: null, audioVol: 1,
   };
   vol.addEventListener('input', () => {
     t.audioVol = vol.value / 100; // 0..3
@@ -288,51 +293,23 @@ function ensureTile(participant) {
   return t;
 }
 
-// applyTileVolume: индивидуальная громкость ОДНОГО участника (только у себя).
-// ≤100% — обычный путь (<audio>.volume + livekit setVolume).
-// >100% — буст через WebAudio GainNode: <audio> глушим (иначе двойной звук),
-// весь звук гоним через gain с коэффициентом >1 (до 3.0). Юзкейс: у участника
-// тихий микрофон — крутим ЕГО ползунок выше 100%, слышно громче.
+// Один путь для громкости 0–300%, без второго воспроизведения через <audio>.
 function applyTileVolume(t) {
-  const v = t.audioVol;
-  if (v <= 1) {
-    teardownBoost(t); // вернуться на обычный путь
-    if (t.audioEl) { t.audioEl.volume = v; t.audioEl.muted = v === 0; }
-    if (t.audioTrack && t.audioTrack.setVolume) {
-      try { t.audioTrack.setVolume(v); } catch (_) {}
-    }
-    return;
-  }
-  // буст: нужен живой трек
-  const mst = t.audioTrack && t.audioTrack.mediaStreamTrack;
-  if (!mst) { // трека ещё нет — применим когда attachTrack поставит audioTrack
-    if (t.audioEl) t.audioEl.volume = 1;
-    return;
-  }
-  if (!t.boostCtx) {
-    t.boostCtx = new AudioContext();
-    t.boostSrc = t.boostCtx.createMediaStreamSource(new MediaStream([mst]));
-    t.boostGain = t.boostCtx.createGain();
-    t.boostSrc.connect(t.boostGain);
-    t.boostGain.connect(t.boostCtx.destination);
-  }
-  if (t.boostCtx.state === 'suspended') t.boostCtx.resume().catch(() => {});
-  t.boostGain.gain.value = v; // >1 — усиление (клиппинг на совести кликающего)
-  // исходный <audio> глушим, чтобы не играть дважды (сам поток идёт через gain)
-  if (t.audioEl) { t.audioEl.muted = true; }
-  if (t.audioTrack && t.audioTrack.setVolume) {
-    try { t.audioTrack.setVolume(0); } catch (_) {}
-  }
+  if (t.audioGain) t.audioGain.gain.value = t.audioVol;
+  if (playbackCtx?.state === 'suspended') playbackCtx.resume().catch(() => {});
 }
 
-// teardownBoost: разобрать WebAudio-граф буста и вернуть обычный <audio>.
-function teardownBoost(t) {
-  if (!t.boostCtx) return;
-  try { t.boostSrc.disconnect(); } catch (_) {}
-  try { t.boostGain.disconnect(); } catch (_) {}
-  try { t.boostCtx.close(); } catch (_) {}
-  t.boostCtx = t.boostSrc = t.boostGain = null;
-  if (t.audioEl) t.audioEl.muted = false;
+function detachAudio(t, track) {
+  const input = t?.audioTracks.get(track);
+  if (!input) return;
+  input.disconnect();
+  t.audioTracks.delete(track);
+}
+
+function clearTileAudio(t) {
+  for (const track of t.audioTracks.keys()) detachAudio(t, track);
+  t.audioGain?.disconnect();
+  t.audioGain = null;
 }
 
 // обновить ник на тайле (name пришёл/изменился после создания тайла)
@@ -368,6 +345,7 @@ function makeDiagnosisLabel(label, name, identity) {
 function removeTile(participant) {
   const t = tiles.get(participant.sid);
   if (t) {
+    clearTileAudio(t);
     t.el.remove();
     tiles.delete(participant.sid);
   }
@@ -391,14 +369,19 @@ function attachTrack(participant, track) {
     t.el.insertBefore(el, t.el.firstChild);
     t.videoEl = el;
   } else if (track.kind === Track.Kind.Audio) {
-    // аудио: attach к скрытому элементу, autoplay
-    const el = track.attach();
-    el.autoplay = true;
-    el.style.display = 'none';
-    document.body.appendChild(el);
-    t.audioEl = el;
-    t.audioTrack = track;
-    // применить выбранную ползунком громкость и буст после attach трека
+    if (t.audioTracks.has(track)) return;
+    playbackCtx = playbackCtx || new AudioContext();
+    if (!t.audioGain) {
+      t.audioGain = new GainNode(playbackCtx, {
+        gain: t.audioVol, channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers',
+      });
+      t.audioGain.connect(playbackCtx.destination);
+    }
+    const input = new MediaStreamAudioSourceNode(playbackCtx, {
+      mediaStream: new MediaStream([track.mediaStreamTrack]),
+    });
+    input.connect(t.audioGain);
+    t.audioTracks.set(track, input);
     applyTileVolume(t);
     // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
     // Главный рычаг latency на стороне получателя (экономит 50-150ms).
@@ -413,7 +396,8 @@ function attachTrack(participant, track) {
   }
 }
 
-function detachTrack(track) {
+function detachTrack(track, participant) {
+  detachAudio(tiles.get(participant.sid), track);
   track.detach().forEach((el) => el.remove());
 }
 
@@ -425,6 +409,7 @@ function palataFromPath() {
 
 async function join(roomName = palataFromPath()) {
   if (joining) return;
+  const restoreMic = localStorage.getItem('meetlerMicEnabled') !== 'false';
   $('err').textContent = '';
   const name = $('name').value.trim();
   // запомнить имя: не заставляем вводить заново при каждом визите
@@ -473,6 +458,7 @@ async function join(roomName = palataFromPath()) {
         // задержки на кодере. Низкий битрейт (качество побоку).
         dtx: false,
         red: false,
+        forceStereo: false,
         audioPreset: { maxBitrate: 24000, ptime: 10 },
       },
     });
@@ -488,9 +474,10 @@ async function join(roomName = palataFromPath()) {
     rememberCall(roomName);
     $('callName').value = name;
 
-    // Устройства включаются кнопками; вход в палату не ждёт доступа к ним.
+    // Вход не ждёт доступа к устройствам; микрофон восстановится в фоне.
     syncMediaButtons();
     initRecordMix();
+    enableAudio();
 
     setCallState('connected');
     refreshCueControls();
@@ -509,6 +496,7 @@ async function join(roomName = palataFromPath()) {
     votesTimer = setInterval(refreshVotes, 4000); // прогресс голосов — быстрее
     playWelcome(); // поприветствовать и самого вошедшего
     startStats();
+    if (restoreMic) await toggleDevice('micBtn', (participant) => setMicrophone(participant, true));
     return true;
   } catch (e) {
     $('err').textContent = 'Ошибка входа: ' + (e.message || e);
@@ -524,7 +512,7 @@ function wireRoomEvents(r) {
     attachTrack(participant, track);
   });
   r.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
-    detachTrack(track);
+    detachTrack(track, participant);
     // видео ушло (unsubscribe) — без этого тайл оставался чёрным
     if (track.kind === Track.Kind.Video) {
       const t = tiles.get(participant.sid);
@@ -571,6 +559,11 @@ function wireRoomEvents(r) {
       attachLocalVideo(pub.track);
     }
     if (pub.source === Track.Source.Microphone && pub.track) {
+      if (room === r && !leavingPage && !selfLeaving) {
+        microphoneTrack = pub.track;
+        const deviceId = pub.track.mediaStreamTrack.getSettings().deviceId;
+        if (deviceId) localStorage.setItem('meetlerMicDevice', deviceId);
+      }
       addToRecordMix(pub.track.mediaStreamTrack);
     }
     syncMediaButtons();
@@ -760,13 +753,27 @@ $('name').addEventListener('input', () => {
 
 // Восстановить ник один раз; переходы между палатами используют текущее поле.
 (function initName() {
-  let saved;
-  try { saved = JSON.parse(sessionStorage.getItem('meetlerCall')); } catch (_) {}
+  const saved = readCall();
   const name = saved?.room === palataFromPath() && typeof saved.name === 'string'
     ? saved.name : localStorage.getItem('meetlerName');
   if (typeof name === 'string') $('name').value = name;
   $('callName').value = $('name').value;
 })();
+
+async function enableAudio() {
+  const activeRoom = room;
+  if (!activeRoom) return;
+  for (const ctx of [playbackCtx, recCtx, sfxCtx]) {
+    if (ctx?.state === 'suspended') ctx.resume().catch(() => {});
+  }
+  try { await activeRoom.startAudio(); } catch (_) {}
+}
+document.addEventListener('click', () => {
+  if (room && (!room.canPlaybackAudio || playbackCtx?.state === 'suspended'
+      || recCtx?.state === 'suspended' || sfxCtx?.state === 'suspended')) {
+    return enableAudio();
+  }
+}, { capture: true });
 
 function syncMediaButtons() {
   const participant = room?.localParticipant;
@@ -778,9 +785,10 @@ function syncMediaButtons() {
 async function toggleDevice(buttonId, toggle) {
   const button = $(buttonId);
   if (!room || button.disabled) return;
+  const activeRoom = room;
   button.disabled = true;
   try {
-    await toggle(room.localParticipant);
+    await toggle(activeRoom.localParticipant);
   } catch (e) {
     $('err').textContent = 'Не удалось переключить устройство: ' + e.message;
   } finally {
@@ -788,10 +796,28 @@ async function toggleDevice(buttonId, toggle) {
     syncMediaButtons();
   }
 }
-$('micBtn').onclick = () => toggleDevice('micBtn', (participant) =>
-  participant.setMicrophoneEnabled(!participant.isMicrophoneEnabled, {
+function microphoneOptions() {
+  const deviceId = localStorage.getItem('meetlerMicDevice');
+  return {
     echoCancellation: true, noiseSuppression: false, autoGainControl: false,
-  }));
+    // Захватываем оба канала; при публикации кодер смешивает их в mono.
+    channelCount: { ideal: 2 },
+    deviceId: deviceId ? { ideal: deviceId } : undefined,
+  };
+}
+async function setMicrophone(participant, enabled) {
+  if (enabled && !participant.getTrackPublication(Track.Source.Microphone)
+      && microphoneTrack?.mediaStreamTrack.readyState === 'live') {
+    await participant.publishTrack(microphoneTrack);
+  }
+  return participant.setMicrophoneEnabled(enabled, microphoneOptions());
+}
+$('micBtn').onclick = () => {
+  if (!room || $('micBtn').disabled) return;
+  const enabled = !room.localParticipant.isMicrophoneEnabled;
+  localStorage.setItem('meetlerMicEnabled', String(enabled));
+  return toggleDevice('micBtn', (participant) => setMicrophone(participant, enabled));
+};
 $('camBtn').onclick = () => toggleDevice('camBtn', (participant) =>
   participant.setCameraEnabled(!participant.isCameraEnabled));
 // демонстрация экрана: toggle — старт/стоп своей трансляции
@@ -923,17 +949,11 @@ async function playUrlToRoom(url, btnEl, burstId) {
 
     const src = sfxCtx.createBufferSource();
     src.buffer = buffer;
-    const dest = sfxCtx.createMediaStreamDestination();
+    const dest = new MediaStreamAudioDestinationNode(sfxCtx, { channelCount: 1 });
     // громкость В ПАЛАТУ масштабируется бёрстом (спам кликов → громче всем)
     const roomGain = sfxCtx.createGain();
     roomGain.gain.value = burstId ? gainForBurst(burstId) : 1;
-    // WebRTC/Opus без согласования stereo=1 отдаёт от стерео-источника только
-    // ЛЕВЫЙ канал — слушатели теряли правую половину микса («одно ухо»).
-    // Явный моно-даунмикс (L+R)/2 ДО публикации: в палату уходит полный микс.
-    // Локальный монитор ниже остаётся стерео.
-    roomGain.channelCount = 1;
-    roomGain.channelCountMode = 'explicit';
-    roomGain.channelInterpretation = 'speakers';
+    // Смешиваем L+R в mono до публикации.
     src.connect(roomGain);
     roomGain.connect(dest);          // в палату (через бёрст-усиление)
     const monitor = sfxCtx.createGain();
@@ -1182,12 +1202,22 @@ async function refreshWardNav() {
 // синхронно по Disconnected), чиним URL/заголовок и входим в новую через
 // join() — ник тянется из localStorage/поля, ничего вводить заново не надо.
 async function switchRoom(newRoom, rejoin = false) {
-  if (!room || joining || switching || (!rejoin && newRoom === room.name)) return;
+  if (!room || joining || switching || $('micBtn').disabled || (!rejoin && newRoom === room.name)) return;
   switching = true;             // cleanup не будет прятать stage (без мигания)
+  setCallState('restoring');
   selfLeaving = true;
   const old = room;
   room = null;
-  try { old.disconnect(); } catch (_) {}
+  // Отвязать микрофон без остановки захвата, чтобы не запрашивать доступ снова.
+  const mic = old.localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
+  if (mic?.mediaStreamTrack.readyState === 'live') {
+    microphoneTrack = mic;
+    try {
+      await old.localParticipant.unpublishTrack(mic, false);
+      await mic.setAudioContext(undefined);
+    } catch (_) {}
+  }
+  try { await old.disconnect(); } catch (_) {}
   selfLeaving = false;
   cleanup();                    // сносит тайлы/таймеры, но stage остаётся виден
   // мгновенно показываем пункт назначения в UI, пока идёт reconnect в фоне
@@ -1672,7 +1702,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // --- Запись последних 15 секунд микса комнаты ---
-// PCM-кольцевой буфер (ScriptProcessor). Даёт РОВНО последние 15с и валидный файл
+// PCM-кольцевой буфер (AudioWorklet). Даёт РОВНО последние 15с и валидный файл
 // (webm нельзя обрезать по времени на клиенте — заголовок только в первом чанке).
 // На выходе .wav (мгновенно, без энкодера, корректная обрезка по сэмплам).
 const REC_WINDOW_SEC = 15;
@@ -1684,7 +1714,7 @@ let recRingSize = 0;
 let recWritePos = 0;
 let recFilled = 0;
 let recSampleRate = 48000;
-const recConnected = new WeakSet();
+let recConnected = new WeakSet();
 
 // ringWrite: очередной блок моно-сэмплов в кольцевой буфер (вызов из worklet).
 function ringWrite(inBuf) {
@@ -1696,8 +1726,7 @@ function ringWrite(inBuf) {
   }
 }
 
-// initRecordMix: WebAudio-граф записи 15с. Тап — AudioWorklet (ScriptProcessor
-// — deprecated API, выкинут). Модуль воркета инлайном (Blob URL): web/
+// initRecordMix: WebAudio-граф записи 15с. Модуль AudioWorklet инлайном (Blob URL): web/
 // остаётся одним файлом без отдельной поставки. Асинхронная инициализация:
 // recMixGain создан синхронно, addToRecordMix можно звать сразу — данные
 // пойдут, как только воркет подключится (десятки мс на старте).
@@ -1710,7 +1739,7 @@ function initRecordMix() {
   recWritePos = 0; recFilled = 0;
 
   recMixGain = recCtx.createGain();
-  // весь микс — моно (как раньше ScriptProcessor(…, 1, 1)): (L+R)/2 на входе
+  // Для WAV-записи весь микс — моно: (L+R)/2 на входе.
   recMixGain.channelCount = 1;
   recMixGain.channelCountMode = 'explicit';
 
@@ -1846,9 +1875,12 @@ function cleanup() {
   try { if (recNode) recNode.disconnect(); } catch (_) {}
   try { if (recCtx) recCtx.close(); } catch (_) {}
   recCtx = null; recNode = null; recMixGain = null; recRing = null;
+  recConnected = new WeakSet();
   recWritePos = 0; recFilled = 0;
-  tiles.forEach((t) => t.el.remove());
+  tiles.forEach((t) => { clearTileAudio(t); t.el.remove(); });
   tiles.clear();
+  if (playbackCtx) playbackCtx.close().catch(() => {});
+  playbackCtx = null;
   if (localTile) { localTile.remove(); localTile = null; }
   document.body.classList.remove('tile-maximized'); // сбросить разворот
   screenTracks = []; // сброс состояния демонстрации
