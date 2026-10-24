@@ -283,7 +283,7 @@ function ensureTile(participant) {
   grid.appendChild(el);
   t = {
     el, videoEl: null, ph, label, kickBtn: kick,
-    audioTracks: new Map(), audioGain: null, audioVol: 1,
+    audioTracks: new Map(), audioGain: null, sfxGain: null, audioVol: 1,
   };
   vol.addEventListener('input', () => {
     t.audioVol = vol.value / 100; // 0..3
@@ -308,6 +308,8 @@ function detachAudio(t, track) {
 
 function clearTileAudio(t) {
   for (const track of t.audioTracks.keys()) detachAudio(t, track);
+  t.sfxGain?.disconnect();
+  t.sfxGain = null;
   t.audioGain?.disconnect();
   t.audioGain = null;
 }
@@ -360,7 +362,7 @@ function prepareTileVideo(video) {
   else video.addEventListener('loadeddata', reveal, { once: true });
 }
 
-function attachTrack(participant, track) {
+function attachTrack(participant, track, publication) {
   const t = ensureTile(participant);
   if (track.kind === Track.Kind.Video) {
     const el = track.attach();
@@ -380,7 +382,15 @@ function attachTrack(participant, track) {
     const input = new MediaStreamAudioSourceNode(playbackCtx, {
       mediaStream: new MediaStream([track.mediaStreamTrack]),
     });
-    input.connect(t.audioGain);
+    if (publication.trackName === 'sfx') {
+      if (!t.sfxGain) {
+        t.sfxGain = new GainNode(playbackCtx, { gain: sbVolume() });
+        t.sfxGain.connect(t.audioGain);
+      }
+      input.connect(t.sfxGain);
+    } else {
+      input.connect(t.audioGain);
+    }
     t.audioTracks.set(track, input);
     applyTileVolume(t);
     // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
@@ -508,8 +518,8 @@ async function join(roomName = palataFromPath()) {
 }
 
 function wireRoomEvents(r) {
-  r.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
-    attachTrack(participant, track);
+  r.on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
+    attachTrack(participant, track, pub);
   });
   r.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
     detachTrack(track, participant);
@@ -988,7 +998,7 @@ async function playUrlToRoom(url, btnEl, burstId) {
 
 // --- индивидуальная громкость звуковой аптечки (только у себя) ---
 function sbVolume() {
-  const v = Number(localStorage.getItem('sbVolume'));
+  const v = Number(localStorage.getItem('sbVolume') ?? 1);
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
 }
 
@@ -1002,8 +1012,11 @@ function sbVolume() {
   slider.addEventListener('input', () => {
     const v = slider.value / 100;
     localStorage.setItem('sbVolume', String(v));
-    // применить НА ЛЕТУ к своему монитору, если звук уже играет
+    // Применить сразу к своему монитору и входящим звукам аптечки.
     if (sfxMonitorGain) sfxMonitorGain.gain.value = v;
+    for (const t of tiles.values()) {
+      if (t.sfxGain) t.sfxGain.gain.value = v;
+    }
   });
 })();
 
