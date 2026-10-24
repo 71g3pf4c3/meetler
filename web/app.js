@@ -1779,35 +1779,15 @@ function collectRecTail() {
   return out;
 }
 
-// encodeMp3: Float32 PCM mono -> mp3 (lamejs). Блокирует на ~десятки мс для 15с —
-// приемлемо (разовая кнопка). lamejs грузится глобально (web/vendor/lame.min.js).
-function encodeMp3(samples, sampleRate) {
-  const enc = new lamejs.Mp3Encoder(1, sampleRate, 128); // mono, 128kbps
-  const pcm = new Int16Array(samples.length);
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  const out = [];
-  const block = 1152;
-  for (let i = 0; i < pcm.length; i += block) {
-    const buf = enc.encodeBuffer(pcm.subarray(i, i + block));
-    if (buf.length) out.push(buf);
-  }
-  const end = enc.flush();
-  if (end.length) out.push(end);
-  return new Blob(out, { type: 'audio/mpeg' });
-}
-
 $('recBtn').onclick = () => {
   const out = collectRecTail();
   if (!out) { $('err').textContent = 'Пока нечего скачивать (запись ещё копится).'; return; }
-  const blob = encodeMp3(out, recSampleRate);
+  const blob = encodeWav(out, recSampleRate);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   a.href = url;
-  a.download = `meetler-${ts}.mp3`;
+  a.download = `meetler-${ts}.wav`;
   document.body.appendChild(a);
   a.click();
   a.remove();
