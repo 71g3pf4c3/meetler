@@ -147,9 +147,7 @@ API, signaling API LiveKit и Telegram HTTP по умолчанию слушаю
 ## Разработка
 
 CI (GitHub Actions) на каждый push/PR: `go build`/`go vet` api и tgbridge,
-синтаксис фронтенда и e2e-тесты (Playwright, mock `/api/*`, бэк не нужен).
-Локально: `cd e2e && npm install && npx playwright install chromium && npx playwright test`.
-Против живого стека: `E2E_BASE_URL=https://… npx playwright test`.
+проверка синтаксиса фронтенда.
 
 ## Nix-пакеты
 

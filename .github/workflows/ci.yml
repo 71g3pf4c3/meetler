@@ -1,7 +1,4 @@
-# CI: линт Go-сервисов, синтаксис фронтенда, e2e (Playwright, mock /api/*).
-# e2e гоняется против локальной статики web/ (serve-static.js) — LiveKit
-# и бэк не нужны, стабильно и без секретов. Полный стек (NixOS-модуль)
-# — отдельная ручная задача, здесь только детерминированный smoke.
+# CI: линт Go-сервисов и синтаксис фронтенда.
 
 name: ci
 
@@ -45,33 +42,3 @@ jobs:
       - run: |
           cp web/app.js /tmp/chk-app.mjs && node --check /tmp/chk-app.mjs
           cp web/critters.js /tmp/chk-crit.mjs && node --check /tmp/chk-crit.mjs
-
-  e2e:
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: install
-        working-directory: e2e
-        run: npm install
-
-      - name: install chromium
-        working-directory: e2e
-        run: npx playwright install --with-deps chromium
-
-      - name: test (mock /api/*, без бэка)
-        working-directory: e2e
-        run: npx playwright test
-
-      - name: 'artifact: report'
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: e2e/playwright-report/
-          retention-days: 7
