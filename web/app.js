@@ -189,20 +189,10 @@ function ensureTile(participant) {
 
   addMaxControls(el); // кнопка разворота + клик по тайлу = на всё окно
 
-  // hard mute: заглушить ЭТОГО участника у себя в один клик. Поверх слайдера
-  // громкости (приоритет кнопки); на остальных не влияет; сессионный.
-  const hm = document.createElement('button');
-  hm.className = 'hmute';
-  hm.textContent = '🔇';
-  hm.title = 'hard mute: заглушить у себя';
-  hm.onclick = () => setHardMute(t, !t.hardMuted);
-  el.appendChild(hm);
-
   grid.appendChild(el);
   t = {
-    el, videoEl: null, ph, label, kickBtn: kick, hmuteBtn: hm,
-    identity: participant.identity,
-    audioEl: null, audioTrack: null, audioVol: 1, hardMuted: false,
+    el, videoEl: null, ph, label, kickBtn: kick,
+    audioEl: null, audioTrack: null, audioVol: 1,
     boostCtx: null, boostSrc: null, boostGain: null, // WebAudio граф для >100%
   };
   vol.addEventListener('input', () => {
@@ -211,31 +201,6 @@ function ensureTile(participant) {
   });
   tiles.set(participant.sid, t);
   return t;
-}
-
-// setHardMute: toggle жёсткого мута участника (у себя). Хранится на тайле —
-// сессионный, как громкость: identity анонима между заходами не стабилен.
-function setHardMute(t, on) {
-  t.hardMuted = on;
-  if (t.hmuteBtn) {
-    t.hmuteBtn.textContent = on ? '🔈' : '🔇';
-    t.hmuteBtn.classList.toggle('on', on);
-    t.hmuteBtn.title = on ? 'разрешить звук (hard mute включён)' : 'hard mute: заглушить у себя';
-  }
-  applyTileAudioState(t);
-}
-
-// applyTileAudioState: полная реконструкция аудио-состояния тайла —
-// громкость ползунком/бустом, затем поверх — hard mute (приоритет кнопки).
-// Единая точка: вызывается из setHardMute и при attach аудио-трека.
-function applyTileAudioState(t) {
-  applyTileVolume(t);
-  if (!t.hardMuted) return;
-  if (t.audioEl) t.audioEl.muted = true;
-  if (t.boostGain) t.boostGain.gain.value = 0;
-  if (t.audioTrack && t.audioTrack.setVolume) {
-    try { t.audioTrack.setVolume(0); } catch (_) {}
-  }
 }
 
 // applyTileVolume: индивидуальная громкость ОДНОГО участника (только у себя).
@@ -339,19 +304,10 @@ function attachTrack(participant, track) {
     el.autoplay = true;
     el.style.display = 'none';
     document.body.appendChild(el);
-    // применить выбранную ползунком громкость (мог выставить до attach)
-    if (t.audioVol !== undefined) {
-      el.volume = t.audioVol;
-      el.muted = t.audioVol === 0;
-    }
     t.audioEl = el;
     t.audioTrack = track;
-    // переприменить полное аудио-состояние (ползунок/буст/hard mute могли
-    // выставить до attach; буст >100% требует живого mediaStreamTrack)
-    applyTileAudioState(t);
-    // «тишина»: аудио tgbridge (TG-медиа/YouTube) — декоративный звук, глушим.
-    // ПОСЛЕ applyTileAudioState — иначе он перезапишет muted.
-    if (decorMuted && t.identity === 'tgbridge') el.muted = true;
+    // применить выбранную ползунком громкость и буст после attach трека
+    applyTileVolume(t);
     // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
     // Главный рычаг latency на стороне получателя (экономит 50-150ms).
     try {
@@ -635,36 +591,11 @@ function broadcastSfxUpdate() {
   } catch (_) {}
 }
 
-// --- «ТИШИНА»: мут всех ДЕКОРАТИВНЫХ звуков, голоса людей остаются ---
-// Глушим: звук.аптечку (локальный монитор), джинглы welcome/farewell,
-// аудио tgbridge (TG-медиа/YouTube-озвучку), тварей (fly/roach).
-// НЕ глушим: микрофоны участников (тайлы с vol-ползунком).
-// Состояние персональное (localStorage), отправку звуков другим не трогаем.
-let decorMuted = localStorage.getItem('meetlerDecorMuted') === '1';
-window.__meetlerDecorMuted = decorMuted; // читает critters.js (fly/roach)
-
-function setDecorMuted(v) {
-  decorMuted = v;
-  window.__meetlerDecorMuted = v;
-  localStorage.setItem('meetlerDecorMuted', v ? '1' : '0');
-  const btn = $('quietBtn');
-  if (btn) {
-    btn.classList.toggle('on', v);
-    btn.textContent = v ? '🔇 ТИШИНА ВКЛ' : '🔇 Тишина';
-  }
-  // аудио tgbridge-тайлов: mute/unmute
-  for (const t of tiles.values()) {
-    if (t.identity === 'tgbridge' && t.audioEl) t.audioEl.muted = v;
-  }
-  // текущий играющий звук аптечки: глушим/возвращаем локальный монитор
-  if (sfxMonitorGain) sfxMonitorGain.gain.value = v ? 0 : sbVolume();
-}
-
 // playCue: проиграть джингл палаты (welcome/farewell). Сначала HEAD-проверка
 // кастомного (надёжнее, чем ловить 404 через <audio>.onerror, который на
 // текстовый 404-ответ срабатывает не всегда); нет кастома → дефолтный файл.
 async function playCue(kind, defaultUrl) {
-  if (!room || decorMuted) return;
+  if (!room) return;
   const vol = sbVolume();
   if (vol <= 0) return; // уважаем индивидуальный mute аптечки
   let url = defaultUrl;
@@ -934,7 +865,7 @@ async function playUrlToRoom(url, btnEl, burstId) {
     src.connect(roomGain);
     roomGain.connect(dest);          // в палату (через бёрст-усиление)
     const monitor = sfxCtx.createGain();
-    monitor.gain.value = decorMuted ? 0 : sbVolume(); // индивидуальная громкость (у себя); при «тишине» — 0
+    monitor.gain.value = sbVolume(); // индивидуальная громкость (у себя)
     sfxMonitorGain = monitor;        // чтобы ползунок менял её НА ЛЕТУ
     src.connect(monitor);
     monitor.connect(sfxCtx.destination); // себе в колонки
@@ -1869,8 +1800,3 @@ function stopStats() {
   statsTimer = null;
   $('stats').textContent = '';
 }
-
-// большая красная «тишина»: мут всех декоративных звуков (состояние из localStorage).
-// Здесь, в конце: все let-объявления (sfxMonitorGain и пр.) уже позади.
-setDecorMuted(decorMuted);
-$('quietBtn').onclick = () => setDecorMuted(!decorMuted);

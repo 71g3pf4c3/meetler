@@ -69,8 +69,6 @@
         try { el.pause(); } catch (_) {}
       },
       setVol(v) {
-        // «тишина» (кнопка в #bar): декоративные звуки тварей глушим
-        if (window.__meetlerDecorMuted) v = 0;
         const vol = Math.max(0, Math.min(1, v));
         if (gain) gain.gain.value += (vol - gain.gain.value) * 0.1; // плавно
         else el.volume = vol; // fallback без WebAudio
