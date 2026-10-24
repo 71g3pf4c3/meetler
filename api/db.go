@@ -353,7 +353,7 @@ func (r *roomDB) migrateAvatars(dir, room string) int {
 	for _, e := range entries {
 		name := e.Name()
 		ext := strings.ToLower(filepath.Ext(name))
-		if e.IsDir() || avatarExt[ext] == "" {
+		if e.IsDir() || ext == ".likes" {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, name))

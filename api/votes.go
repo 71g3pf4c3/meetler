@@ -47,7 +47,7 @@ func validTarget(kind, target string) bool {
 	case "sound":
 		return target == filepath.Base(target) && soundExt[strings.ToLower(filepath.Ext(target))] != ""
 	case "avatar":
-		return target == filepath.Base(target) && avatarExt[strings.ToLower(filepath.Ext(target))] != ""
+		return target != "" && target == filepath.Base(target)
 	case "room":
 		return validRoom(target)
 	}

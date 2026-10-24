@@ -1419,9 +1419,6 @@ $('avatarFile').onchange = async () => {
     const rm = currentRoom();
     if (!rm) throw new Error('сначала укажи палату — портреты у каждой свои');
     if (f.size > 4 * 1024 * 1024) throw new Error('больше 4 МБ — не влезет');
-    if (!/\.(jpe?g|png|gif|webp)$/i.test(f.name)) {
-      throw new Error('разрешены jpg/png/gif/webp');
-    }
     // GIF (и анимированный webp) НЕ прогоняем через canvas: toBlob берёт один
     // кадр и убивает анимацию. Такие льём как есть (размер уже проверен ≤4 МБ).
     // Остальное ужимаем: downscale ≤256px + webp (fallback jpeg) — экономит
