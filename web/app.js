@@ -10,10 +10,59 @@ import {
 } from '/vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
 
 const $ = (id) => document.getElementById(id);
+const page = document.documentElement;
 const grid = $('grid');
 const tiles = new Map(); // participant.sid -> { el, videoEl }
+const callPanels = document.querySelectorAll('#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues');
+const joinButtons = document.querySelectorAll('#createBtn, #renameBtn');
 
 let room = null;
+let joining = false;
+let leavingPage = false;
+// LiveKit disconnects on page leave; keep the outgoing call view intact.
+for (const event of ['beforeunload', 'pagehide']) {
+  window.addEventListener(event, () => { leavingPage = true; }, { capture: true });
+}
+window.addEventListener('pageshow', () => { leavingPage = false; });
+function setCallState(state = '', error = '') {
+  if (state) page.dataset.callState = state;
+  else {
+    delete page.dataset.callState;
+    if (palataFromPath()) history.replaceState(null, '', '/');
+    document.title = 'meetler :: палата №6';
+  }
+  $('callStatus').hidden = !error;
+  $('callStatusText').textContent = error;
+  callPanels.forEach((el) => { el.inert = state === 'restoring'; });
+}
+
+if (page.dataset.callState) setCallState(page.dataset.callState);
+
+function rememberCall(roomName) {
+  sessionStorage.setItem('meetlerCall', JSON.stringify({ room: roomName, name: $('name').value.trim() }));
+}
+
+function forgetCall() {
+  sessionStorage.removeItem('meetlerCall');
+}
+
+async function enterRoom(roomName = palataFromPath()) {
+  if (room || joining) return;
+  if (!roomName) {
+    forgetCall();
+    if (page.dataset.callState === 'restoring') { setCallState(); cleanup(); }
+    return;
+  }
+  setCallState('restoring');
+  if (await join(roomName)) return;
+  const failedRoom = room;
+  room = null;
+  try { await failedRoom?.disconnect(); } catch (_) {}
+  if (page.dataset.callState) {
+    setCallState('restoring', $('err').textContent || 'Не удалось восстановить соединение.');
+  }
+  cleanup();
+}
 
 // палата, для которой сейчас показываем/льём данные (звуки, портреты):
 // в конференции — её имя; на главной — из поля формы или URL.
@@ -28,6 +77,7 @@ const roomApi = (rm) => '/api/rooms/' + encodeURIComponent(rm);
 // --- голосование за деструктив (кик / удаление звука / портрета) ---
 // Прогресс голосования считаем по voter-id на сервере.
 const VOTE_THRESHOLD = 3;
+let voteRevision = 0;
 
 // стабильный анонимный id браузера (голосующий). Не identity — голосовать
 // можно и вне палаты; дедуп на сервере по нему.
@@ -40,7 +90,7 @@ function clientId() {
   return c;
 }
 
-// отправить голос. Возвращает {count, threshold, done} или null при ошибке.
+// переключить свой голос. Возвращает {count, threshold, done, voted}.
 async function castVote(rm, kind, target) {
   try {
     const res = await fetch(roomApi(rm) + '/votes', {
@@ -49,13 +99,14 @@ async function castVote(rm, kind, target) {
       body: JSON.stringify({ kind, target, voter: clientId() }),
     });
     if (!res.ok) throw new Error((await res.text()) || res.status);
-    return res.json();
+    const result = await res.json();
+    voteRevision++;
+    return result;
   } catch (_) {
     return null;
   }
 }
 
-// покрасить элемент по числу голосов: 0 норма, 1 жёлтый, 2 оранжевый, 3 красный
 // порог для ключа голосования: tgbridge (служебный мост) выписывается первым
 // голосом, пациенты — коллегиально (VOTE_THRESHOLD). Сервер — истина порога
 // (отдаёт threshold в ответе POST), здесь — догадка для GET-счётчиков.
@@ -63,13 +114,61 @@ function voteThresholdForKey(vkey) {
   return vkey === 'kick:tgbridge' ? 1 : VOTE_THRESHOLD;
 }
 
-function applyVoteColor(el, count, th) {
+async function fetchVoteState(rm) {
+  const revision = voteRevision;
+  const res = await fetch(roomApi(rm) + '/votes?voter=' + encodeURIComponent(clientId()));
+  if (!res.ok) throw new Error('Не удалось получить голоса');
+  const state = await res.json();
+  return revision === voteRevision ? state : null;
+}
+
+function updateVoteCounter(el, count, th, voted = false) {
   th = th || voteThresholdForKey(el.dataset.vkey);
-  el.classList.toggle('v3', count >= th);
-  el.classList.toggle('v2', th > 2 && count === 2 && count < th);
-  el.classList.toggle('v1', th > 1 && count === 1 && count < th);
   if (count > 0) el.dataset.votes = `${count}/${th}`;
   else delete el.dataset.votes;
+  el.setAttribute('aria-pressed', String(voted));
+}
+
+function createButton(text, { className = '', title = text, onClick } = {}) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = className;
+  button.textContent = text;
+  button.title = title;
+  button.setAttribute('aria-label', title);
+  if (onClick) button.onclick = onClick;
+  return button;
+}
+
+// Одинаковая кнопка и обработка голосования для всех удалений.
+function createVoteButton({ kind, target, roomName = () => room?.name, onDone, errorId = 'err', className = '', compact = false }) {
+  const key = `${kind}:${target}`;
+  const action = { kick: 'выписку', room: 'закрытие палаты', sound: 'удаление звука', avatar: 'удаление портрета' }[kind];
+  const button = createButton('✕', {
+    className: `icon-button remove-button ${compact ? 'icon-button--small ' : ''}${className}`.trim(),
+    title: `Голос за ${action} (нужно ${voteThresholdForKey(key)})`,
+  });
+  button.dataset.vkey = key;
+  button.setAttribute('aria-pressed', 'false');
+  button.onclick = async () => {
+    if (button.getAttribute('aria-busy') === 'true') return;
+    const rm = typeof roomName === 'function' ? roomName() : roomName;
+    if (!rm) return;
+    button.setAttribute('aria-busy', 'true');
+    try {
+      const result = await castVote(rm, kind, target);
+      if (!result) {
+        const error = $(errorId);
+        if (error) error.textContent = 'Голос не засчитан';
+        return;
+      }
+      updateVoteCounter(button, result.count, result.threshold, result.voted);
+      if (result.done && onDone) await onDone();
+    } finally {
+      button.removeAttribute('aria-busy');
+    }
+  };
+  return button;
 }
 
 async function mintToken(roomName, name) {
@@ -109,20 +208,21 @@ function syncMaxBtn(el) {
   const maxed = el.classList.contains('max');
   b.textContent = maxed ? '⤡' : '⤢';
   b.title = maxed ? 'Свернуть' : 'Развернуть на всё окно';
+  b.setAttribute('aria-label', b.title);
 }
 
 // навесить кнопку разворота + клик-по-тайлу на элемент тайла
 function addMaxControls(el) {
-  const b = document.createElement('button');
-  b.className = 'maxbtn';
-  b.textContent = '⤢';
-  b.title = 'Развернуть на всё окно';
-  b.onclick = (e) => { e.stopPropagation(); toggleMax(el); };
+  const b = createButton('⤢', {
+    className: 'icon-button maxbtn',
+    title: 'Развернуть на всё окно',
+    onClick: (e) => { e.stopPropagation(); toggleMax(el); },
+  });
   el.appendChild(b);
   // клик по самому тайлу тоже разворачивает/сворачивает, но НЕ когда кликнули
   // по контролу (ползунок/кик/кнопки) — у них свои обработчики
   el.addEventListener('click', (e) => {
-    if (e.target.closest('.vol, .kick, .maxbtn, .sfxdel')) return;
+    if (e.target.closest('button, input, a')) return;
     toggleMax(el);
   });
 }
@@ -163,28 +263,13 @@ function ensureTile(participant) {
   vol.title = 'громкость участника (у себя), до 300% — буст';
   el.appendChild(vol);
 
-  // кик — ПО ГОЛОСАМ: нужно VOTE_THRESHOLD разных пациентов. Цвет крестика
-  // отражает прогресс. Когда порог взят — сервер выписывает, а мы шлём всем
-  // «ломаемся» для minecraft-анимации.
-  const kick = document.createElement('button');
-  kick.className = 'kick';
-  kick.textContent = '✕';
-  kick.title = 'Голос за выписку (нужно 3)';
-  kick.dataset.vkey = 'kick:' + participant.identity; // раскраска по опросу
-  // мост — служебный: первый голос выгоняет (см. voteThresholdForKey / api)
-  kick.title = participant.identity === 'tgbridge'
-    ? 'Выписать Telegram-мост (первым же голосом)'
-    : 'Голос за выписку (нужно 3)';
-  kick.onclick = async () => {
-    if (!room) return;
-    const r = await castVote(room.name, 'kick', participant.identity);
-    if (!r) { $('err').textContent = 'Голос не засчитан'; return; }
-    applyVoteColor(kick, r.count, r.threshold);
-    if (r.done) {
-      breakTile(participant.sid);           // анимация у себя
-      broadcastBreak(participant.sid);       // и у всех остальных
-    }
-  };
+  const kick = createVoteButton({
+    className: 'kick', kind: 'kick', target: participant.identity,
+    onDone: () => {
+      breakTile(participant.sid);
+      broadcastBreak(participant.sid);
+    },
+  });
   el.appendChild(kick);
 
   addMaxControls(el); // кнопка разворота + клик по тайлу = на всё окно
@@ -288,14 +373,21 @@ function removeTile(participant) {
   }
 }
 
+function prepareTileVideo(video) {
+  video.autoplay = true;
+  video.playsInline = true;
+  video.style.visibility = 'hidden';
+  const reveal = () => { video.style.visibility = ''; };
+  if (video.readyState >= 2) reveal();
+  else video.addEventListener('loadeddata', reveal, { once: true });
+}
+
 function attachTrack(participant, track) {
   const t = ensureTile(participant);
   if (track.kind === Track.Kind.Video) {
     const el = track.attach();
-    el.autoplay = true;
-    el.playsInline = true;
+    prepareTileVideo(el);
     if (t.videoEl) t.videoEl.remove();
-    t.ph.style.display = 'none';
     t.el.insertBefore(el, t.el.firstChild);
     t.videoEl = el;
   } else if (track.kind === Track.Kind.Audio) {
@@ -331,13 +423,12 @@ function palataFromPath() {
   return /^[a-zA-Z0-9_-]{1,64}$/.test(seg) ? seg : '';
 }
 
-async function join() {
+async function join(roomName = palataFromPath()) {
+  if (joining) return;
   $('err').textContent = '';
-  // палата из URL имеет приоритет; иначе из поля формы
-  const roomName = palataFromPath() || $('room').value.trim();
   const name = $('name').value.trim();
   // запомнить имя: не заставляем вводить заново при каждом визите
-  if (name) localStorage.setItem('meetlerName', name);
+  localStorage.setItem('meetlerName', name);
   if (!roomName) {
     $('err').textContent = 'Укажите номер палаты';
     return;
@@ -346,6 +437,8 @@ async function join() {
   if (palataFromPath() !== roomName) {
     history.replaceState(null, '', '/' + encodeURIComponent(roomName));
   }
+  document.title = `meetler :: палата ${roomName}`;
+  $('roomCrumb').textContent = roomName;
   // getUserMedia доступен только в secure context (https или localhost).
   // По http на IP/домене navigator.mediaDevices === undefined → нет запроса доступа.
   if (!window.isSecureContext || !navigator.mediaDevices) {
@@ -354,7 +447,8 @@ async function join() {
       'Открой через https:// либо с localhost.';
     return;
   }
-  $('joinBtn').disabled = true;
+  joining = true;
+  joinButtons.forEach((button) => { button.disabled = true; });
 
   try {
     const { token } = await mintToken(roomName, name);
@@ -389,54 +483,17 @@ async function join() {
       // автоподписка на все треки в комнате
       autoSubscribe: true,
     });
+    ensureLocalTile();
+    room.remoteParticipants.forEach(ensureTile);
+    rememberCall(roomName);
+    $('callName').value = name;
 
-    // Публикуем микрофон и камеру РАЗДЕЛЬНО: если нет камеры (или отказ по видео),
-    // звук всё равно должен работать. Общий enableCameraAndMicrophone падал целиком.
-    // Захват устройств с таймаутом: зависший getUserMedia (битый драйвер, занятое
-    // устройство) НЕ должен блокировать вход в палату. Вошли — потом доберём медиа.
-    const withTimeout = (p, ms) =>
-      Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
-
-    let micOk = false, camOk = false;
-    try {
-      await withTimeout(room.localParticipant.setMicrophoneEnabled(true, {
-        echoCancellation: true,
-        noiseSuppression: false,
-        autoGainControl: false,
-      }), 8000);
-      micOk = true;
-    } catch (e) {
-      console.warn('mic failed:', e);
-    }
-    try {
-      await withTimeout(room.localParticipant.setCameraEnabled(true), 8000);
-      camOk = true;
-    } catch (e) {
-      console.warn('cam failed:', e);
-    }
-    if (!micOk && !camOk) {
-      $('err').textContent =
-        'Нет доступа к микрофону и камере. Разреши доступ в браузере (значок замка в адресной строке).';
-    } else if (!micOk) {
-      $('err').textContent = 'Микрофон недоступен — другие тебя не услышат.';
-    } else if (!camOk) {
-      $('err').textContent = 'Камера недоступна — звук работает, видео нет.';
-    }
-    $('micBtn').textContent = 'Mic: ' + (micOk ? 'on' : 'off');
-    $('camBtn').textContent = 'Cam: ' + (camOk ? 'on' : 'off');
-
-    // поднять запись микса + подмешать свой микрофон
+    // Устройства включаются кнопками; вход в палату не ждёт доступа к ним.
+    syncMediaButtons();
     initRecordMix();
-    if (micOk) {
-      const micPub = room.localParticipant.getTrackPublication(Track.Source.Microphone);
-      if (micPub && micPub.track) addToRecordMix(micPub.track.mediaStreamTrack);
-    }
 
-    $('join').style.display = 'none';
-    $('stage').style.display = 'flex';
-    ensureLocalTile(); // свой тайл с аватаркой, даже если камеры нет
-    const crumb = $('roomCrumb');
-    if (crumb) crumb.textContent = roomName;
+    setCallState('connected');
+    refreshCueControls();
     refreshSoundboard();
     if (sbTimer) clearInterval(sbTimer);
     sbTimer = setInterval(refreshSoundboard, 20000); // fallback, если data-пинг потерялся
@@ -452,9 +509,13 @@ async function join() {
     votesTimer = setInterval(refreshVotes, 4000); // прогресс голосов — быстрее
     playWelcome(); // поприветствовать и самого вошедшего
     startStats();
+    return true;
   } catch (e) {
     $('err').textContent = 'Ошибка входа: ' + (e.message || e);
-    $('joinBtn').disabled = false;
+    return false;
+  } finally {
+    joining = false;
+    joinButtons.forEach((button) => { button.disabled = false; });
   }
 }
 
@@ -469,17 +530,16 @@ function wireRoomEvents(r) {
       const t = tiles.get(participant.sid);
       if (t) {
         t.videoEl = null;
-        t.ph.style.display = ''; // вернуть аватарку
       }
     }
   });
-  // mute/unmute камеры у удалённых: чёрный экран ↔ аватарка
-  r.on(RoomEvent.TrackMuted, (pub, participant) => {
-    if (pub.kind === Track.Kind.Video) setTileVideo(participant, false);
-  });
-  r.on(RoomEvent.TrackUnmuted, (pub, participant) => {
-    if (pub.kind === Track.Kind.Video) setTileVideo(participant, true);
-  });
+  // События mute/unmute приходят и для своего, и для чужих устройств.
+  for (const [event, show] of [[RoomEvent.TrackMuted, false], [RoomEvent.TrackUnmuted, true]]) {
+    r.on(event, (pub, participant) => {
+      if (pub.kind === Track.Kind.Video) setTileVideo(participant, show);
+      if (participant === r.localParticipant) syncMediaButtons();
+    });
+  }
   r.on(RoomEvent.ParticipantConnected, (p) => {
     ensureTile(p);
     recomputeAvatars(); // роутинг без повторов: пересчитать назначение у всех
@@ -500,36 +560,44 @@ function wireRoomEvents(r) {
       const msg = JSON.parse(new TextDecoder().decode(payload));
       if (msg && msg.t === 'broke' && msg.sid) breakTile(msg.sid);
       // кто-то залил/удалил звук — обновить аптечку сразу, без перезагрузки
-      if (msg && msg.t === 'sfxupd') refreshSoundboard();
+      if (msg && msg.t === 'sfxupd') {
+        refreshSoundboard();
+        refreshCueControls();
+      }
     } catch (_) {}
   });
   r.on(RoomEvent.LocalTrackPublished, (pub) => {
     if (pub.track && pub.track.kind === Track.Kind.Video) {
       attachLocalVideo(pub.track);
     }
+    if (pub.source === Track.Source.Microphone && pub.track) {
+      addToRecordMix(pub.track.mediaStreamTrack);
+    }
+    syncMediaButtons();
   });
   // стоп-шеринг / выключение своей камеры: видео снято — вернуть аватарку
   r.on(RoomEvent.LocalTrackUnpublished, (pub) => {
     if (pub.kind === Track.Kind.Video) removeLocalVideo();
-  });
-  r.on(RoomEvent.LocalTrackMuted, (pub) => {
-    if (pub.kind === Track.Kind.Video) setLocalVideoVisible(false);
-  });
-  r.on(RoomEvent.LocalTrackUnmuted, (pub) => {
-    if (pub.kind === Track.Kind.Video) setLocalVideoVisible(true);
+    syncMediaButtons();
   });
   r.on(RoomEvent.Disconnected, (reason) => {
+    if (leavingPage) return;
     // смена палаты (switchRoom): как только комната сменилась, поздние
     // события СТАРОЙ комнаты не должны трогать UI новой
-    if (room && room !== r) return;
+    if (room !== r) return;
     // личный кик (RemoveParticipant) → страница "тюрьма" с плохой концовкой
     if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+      forgetCall();
       location.href = '/jail.html';
       return;
     }
     // отличаем свой уход/закрытие палаты от потери связи: сообщение об ошибке
     // показываем только когда человек не сам нажал "Выписаться"
     const unexpected = !selfLeaving && reason !== DisconnectReason.CLIENT_INITIATED;
+    if (reason === DisconnectReason.ROOM_DELETED) {
+      forgetCall();
+      setCallState();
+    }
     selfLeaving = false;
     if (room === r) room = null; // currentRoom() дальше читает поле формы
     cleanup();
@@ -591,9 +659,17 @@ function broadcastSfxUpdate() {
   } catch (_) {}
 }
 
-// playCue: проиграть джингл палаты (welcome/farewell). Сначала HEAD-проверка
-// кастомного (надёжнее, чем ловить 404 через <audio>.onerror, который на
-// текстовый 404-ответ срабатывает не всегда); нет кастома → дефолтный файл.
+async function hasCustomCue(roomName, kind) {
+  const res = await fetch(roomApi(roomName) + '/' + kind, {
+    headers: { Range: 'bytes=0-0' }, cache: 'no-store',
+  });
+  if (res.body) res.body.cancel().catch(() => {});
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`Не удалось проверить звук (${res.status})`);
+  return true;
+}
+
+// Проверить кастомный джингл; при отсутствии использовать стандартный.
 async function playCue(kind, defaultUrl) {
   if (!room) return;
   const vol = sbVolume();
@@ -601,8 +677,7 @@ async function playCue(kind, defaultUrl) {
   let url = defaultUrl;
   try {
     const custom = roomApi(room.name) + '/' + kind;
-    const res = await fetch(custom, { method: 'HEAD' });
-    if (res.ok) url = custom;
+    if (await hasCustomCue(room.name, kind)) url = custom;
   } catch (_) { /* нет кастома → дефолт */ }
   const a = new Audio(url);
   a.volume = vol;
@@ -643,11 +718,8 @@ function ensureLocalTile() {
 
 function attachLocalVideo(track) {
   const el = ensureLocalTile();
-  const ph = el.querySelector('.ph');
-  if (ph) ph.style.display = 'none'; // есть видео — аватарку прячем
   const v = track.attach();
-  v.autoplay = true;
-  v.playsInline = true;
+  prepareTileVideo(v);
   v.muted = true; // локальное видео без эха
   const old = localTile.querySelector('video');
   if (old) old.remove();
@@ -659,67 +731,69 @@ function removeLocalVideo() {
   if (!localTile) return;
   const v = localTile.querySelector('video');
   if (v) v.remove();
-  const ph = localTile.querySelector('.ph');
-  if (ph) ph.style.display = '';
 }
 
-// mute/unmute своей камеры: видео есть но не идёт ↔ аватарка
-function setLocalVideoVisible(show) {
-  if (!localTile) return;
-  const v = localTile.querySelector('video');
-  if (v) v.style.display = show ? '' : 'none';
-  const ph = localTile.querySelector('.ph');
-  if (ph) ph.style.display = show && v ? 'none' : '';
-}
-
-// показать/спрятать видео удалённого участника (mute камеры)
+// Скрытое видео открывает портрет под ним у любого участника.
 function setTileVideo(participant, show) {
-  const t = tiles.get(participant.sid);
-  if (!t) return;
-  if (t.videoEl) t.videoEl.style.display = show ? '' : 'none';
-  t.ph.style.display = show && t.videoEl ? 'none' : '';
+  const video = participant.isLocal
+    ? localTile?.querySelector('video')
+    : tiles.get(participant.sid)?.videoEl;
+  if (video) video.style.display = show ? '' : 'none';
 }
 
 // controls
-$('joinBtn').onclick = join;
-$('room').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
-$('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+$('createForm').onsubmit = (e) => {
+  e.preventDefault();
+  enterRoom($('room').value.trim());
+};
+$('renameForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if (!room || joining || switching) return;
+  $('name').value = $('callName').value.trim();
+  await switchRoom(room.name, true);
+};
 // ник сохраняется на каждый ввод: не вводим заново при следующем визите
 $('name').addEventListener('input', () => {
-  const v = $('name').value.trim();
-  if (v) localStorage.setItem('meetlerName', v);
+  $('callName').value = $('name').value;
+  localStorage.setItem('meetlerName', $('name').value.trim());
 });
 
-// URL-резолв палаты (как jitsi): /<palata> → при входе спрашиваем только ник.
-(function initFromUrl() {
-  // сохранённое имя из прошлого визита
-  const saved = localStorage.getItem('meetlerName');
-  if (saved) $('name').value = saved;
-  const palata = palataFromPath();
-  if (palata) {
-    // прячем строку выбора палаты, оставляем только ник
-    const roomInput = $('room');
-    const row = roomInput.closest('tr');
-    if (row) row.style.display = 'none';
-    roomInput.value = palata;
-    const crumb = $('roomCrumb');
-    if (crumb) crumb.textContent = palata;
-    document.title = `meetler :: палата ${palata}`;
-    const nameInput = $('name');
-    if (nameInput) setTimeout(() => nameInput.focus(), 50);
-  }
+// Восстановить ник один раз; переходы между палатами используют текущее поле.
+(function initName() {
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem('meetlerCall')); } catch (_) {}
+  const name = saved?.room === palataFromPath() && typeof saved.name === 'string'
+    ? saved.name : localStorage.getItem('meetlerName');
+  if (typeof name === 'string') $('name').value = name;
+  $('callName').value = $('name').value;
 })();
 
-$('micBtn').onclick = async () => {
-  const enabled = room.localParticipant.isMicrophoneEnabled;
-  await room.localParticipant.setMicrophoneEnabled(!enabled);
-  $('micBtn').textContent = 'Mic: ' + (!enabled ? 'on' : 'off');
-};
-$('camBtn').onclick = async () => {
-  const enabled = room.localParticipant.isCameraEnabled;
-  await room.localParticipant.setCameraEnabled(!enabled);
-  $('camBtn').textContent = 'Cam: ' + (!enabled ? 'on' : 'off');
-};
+function syncMediaButtons() {
+  const participant = room?.localParticipant;
+  $('micBtn').setAttribute('aria-pressed', String(!!participant?.isMicrophoneEnabled));
+  $('camBtn').setAttribute('aria-pressed', String(!!participant?.isCameraEnabled));
+  $('shareBtn').setAttribute('aria-pressed', String(screenTracks.length > 0));
+}
+
+async function toggleDevice(buttonId, toggle) {
+  const button = $(buttonId);
+  if (!room || button.disabled) return;
+  button.disabled = true;
+  try {
+    await toggle(room.localParticipant);
+  } catch (e) {
+    $('err').textContent = 'Не удалось переключить устройство: ' + e.message;
+  } finally {
+    button.disabled = false;
+    syncMediaButtons();
+  }
+}
+$('micBtn').onclick = () => toggleDevice('micBtn', (participant) =>
+  participant.setMicrophoneEnabled(!participant.isMicrophoneEnabled, {
+    echoCancellation: true, noiseSuppression: false, autoGainControl: false,
+  }));
+$('camBtn').onclick = () => toggleDevice('camBtn', (participant) =>
+  participant.setCameraEnabled(!participant.isCameraEnabled));
 // демонстрация экрана: toggle — старт/стоп своей трансляции
 let screenTracks = [];
 $('shareBtn').onclick = async () => {
@@ -737,8 +811,7 @@ $('shareBtn').onclick = async () => {
       t.mediaStreamTrack.addEventListener('ended', stopShare, { once: true });
     }
     screenTracks = tracks;
-    $('shareBtn').textContent = 'Стоп демонстрация';
-    $('shareBtn').classList.add('danger');
+    syncMediaButtons();
   } catch (e) {
     $('err').textContent = 'Демонстрация отменена: ' + e.message;
   }
@@ -747,12 +820,11 @@ $('shareBtn').onclick = async () => {
 async function stopShare() {
   const tracks = screenTracks;
   screenTracks = [];
+  syncMediaButtons();
   for (const t of tracks) {
     try { await room.localParticipant.unpublishTrack(t, true); } catch (_) {}
     try { t.stop(); } catch (_) {}
   }
-  const b = $('shareBtn');
-  if (b) { b.textContent = 'Демонстрация'; b.classList.remove('danger'); }
 }
 // --- Soundboard: проиграть звук по URL для ВСЕХ в палате (как ГОЙДА) ---
 let sfxCtx = null;
@@ -903,6 +975,9 @@ function sbVolume() {
 (function initSbVol() {
   const slider = $('sbVol');
   if (!slider) return;
+  const row = $('sbVolRow');
+  row.addEventListener('click', (e) => e.stopPropagation());
+  row.addEventListener('keydown', (e) => e.stopPropagation());
   slider.value = String(Math.round(sbVolume() * 100));
   slider.addEventListener('input', () => {
     const v = slider.value / 100;
@@ -921,51 +996,38 @@ async function refreshSoundboard() {
     // пустой список приходит как JSON null (Go nil slice)
     const sounds = (await res.json()) || [];
     box.innerHTML = '';
-    box.classList.remove('empty');
-    if (!sounds.length) {
-      box.classList.add('empty');
-      box.textContent = 'аптечка пуста — залей первый звук кнопкой ниже';
-      return;
-    }
+    if (!sounds.length) return;
     for (const s of sounds) {
       const row = document.createElement('span');
       row.className = 'sfxrow';
-      const b = document.createElement('button');
-      b.className = 'sfx';
-      b.textContent = s.label;
-      b.title = s.label;
+      const b = createButton(s.label, { className: 'sfx' });
       b.onclick = () => onSfxClick(s, b);
-      const del = document.createElement('button');
-      del.className = 'sfxdel';
-      del.textContent = '✕';
-      del.title = 'Голос за удаление (нужно 3)';
-      del.dataset.vkey = 'sound:' + s.id; // для раскраски по опросу голосов
-      del.onclick = async () => {
-        const r = await castVote(room.name, 'sound', s.id);
-        if (!r) { $('sbErr').textContent = 'Голос не засчитан'; return; }
-        applyVoteColor(del, r.count, r.threshold);
-        if (r.done) { await refreshSoundboard(); broadcastSfxUpdate(); }
-      };
+      const del = createVoteButton({
+        kind: 'sound', target: s.id, errorId: 'sbErr',
+        onDone: async () => { await refreshSoundboard(); broadcastSfxUpdate(); },
+      });
       row.append(b, del);
       box.appendChild(row);
     }
-    refreshVotes(); // подтянуть текущий прогресс голосов (цвет у всех)
+    refreshVotes();
   } catch (_) { /* soundboard опционален */ }
 }
 
-// опрос прогресса голосов: красит ВСЕ элементы с data-vkey ("kind:target")
-// по текущему числу голосов — чтобы цвет был одинаков у всех пациентов.
+// счётчики общие, нажатая кнопка — только для собственного голоса
 let votesTimer = null;
 let sbTimer = null; // периодический опрос аптечки (fallback к data-пингу)
 async function refreshVotes() {
   if (!room) return;
-  let counts = {};
+  const activeRoom = room;
+  let state;
   try {
-    const res = await fetch(roomApi(room.name) + '/votes');
-    counts = (await res.json()) || {};
+    state = await fetchVoteState(activeRoom.name);
   } catch (_) { return; }
+  if (!state || room !== activeRoom) return;
   document.querySelectorAll('[data-vkey]').forEach((el) => {
-    applyVoteColor(el, counts[el.dataset.vkey] || 0);
+    if (el.getAttribute('aria-busy') === 'true') return;
+    const key = el.dataset.vkey;
+    updateVoteCounter(el, state.counts[key] || 0, undefined, !!state.voted[key]);
   });
 }
 
@@ -1013,7 +1075,7 @@ function fmtAge(unixSec) {
 async function refreshRooms() {
   const body = $('roomsBody');
   if (!body) return;
-  if ($('join').style.display === 'none') return; // в палате — не тратим запросы
+  if (page.dataset.callState) return; // в палате — не тратим запросы
   try {
     const res = await fetch('/api/rooms');
     const rooms = (await res.json()) || [];
@@ -1033,53 +1095,42 @@ async function refreshRooms() {
       // имя палаты строим через DOM (не innerHTML): имя комнаты приходит
       // с сервера и в общем случае не санитизировано
       const tdName = document.createElement('td');
-      const a = document.createElement('a');
-      a.href = '/' + encodeURIComponent(r.name);
-      a.textContent = r.name;
-      tdName.appendChild(a);
+      tdName.className = 'room-action';
+      tdName.appendChild(createButton(r.name, {
+        onClick: () => enterRoom(r.name),
+      }));
       const tdCnt = document.createElement('td');
       tdCnt.textContent = String(r.participants);
       const tdAge = document.createElement('td');
       tdAge.textContent = fmtAge(r.createdAt);
       const tdDel = document.createElement('td');
-      // закрыть палату — ПО ГОЛОСАМ: нужно 3 разных пациента (как кик/звук).
-      // Цвет крестика = прогресс. Порог взят — палата исчезает из списка.
-      const del = document.createElement('button');
-      del.className = 'roomdel';
-      del.textContent = '✕';
-      del.title = 'Голос за закрытие палаты (нужно 3)';
-      del.dataset.vkey = 'room:' + r.name;
+      tdDel.className = 'room-action';
+      const del = createVoteButton({
+        className: 'roomdel', kind: 'room', target: r.name, roomName: r.name,
+        errorId: 'roomsErr', onDone: refreshRooms,
+      });
       del.dataset.room = r.name;
-      del.onclick = async () => {
-        const v = await castVote(r.name, 'room', r.name);
-        if (!v) {
-          const re = $('roomsErr');
-          if (re) re.textContent = 'Голос не засчитан';
-          return;
-        }
-        applyVoteColor(del, v.done ? 3 : v.count);
-        if (v.done) await refreshRooms();
-      };
       tdDel.appendChild(del);
       tr.append(tdName, tdCnt, tdAge, tdDel);
       body.appendChild(tr);
     }
-    refreshRoomVotes(); // раскрасить прогресс закрытия у всех
+    refreshRoomVotes();
   } catch (_) {
     // не показываем ошибку: список палат — не критичная фича
   }
 }
 
-// опрос голосов за закрытие по каждой палате из списка (цвет виден всем).
+// счётчики закрытия палат и состояние собственного голоса
 async function refreshRoomVotes() {
   const btns = document.querySelectorAll('#roomsBody .roomdel');
   for (const b of btns) {
     const rm = b.dataset.room;
     if (!rm) continue;
     try {
-      const res = await fetch('/api/rooms/' + encodeURIComponent(rm) + '/votes');
-      const counts = (await res.json()) || {};
-      applyVoteColor(b, counts['room:' + rm] || 0);
+      const state = await fetchVoteState(rm);
+      if (!state || b.getAttribute('aria-busy') === 'true') continue;
+      const key = b.dataset.vkey;
+      updateVoteCounter(b, state.counts[key] || 0, undefined, !!state.voted[key]);
     } catch (_) { /* не критично */ }
   }
 }
@@ -1130,8 +1181,8 @@ async function refreshWardNav() {
 // Смена палаты без перезагрузки страницы: выходим из текущей (cleanup идёт
 // синхронно по Disconnected), чиним URL/заголовок и входим в новую через
 // join() — ник тянется из localStorage/поля, ничего вводить заново не надо.
-async function switchRoom(newRoom) {
-  if (!room || newRoom === room.name) return;
+async function switchRoom(newRoom, rejoin = false) {
+  if (!room || joining || switching || (!rejoin && newRoom === room.name)) return;
   switching = true;             // cleanup не будет прятать stage (без мигания)
   selfLeaving = true;
   const old = room;
@@ -1141,13 +1192,13 @@ async function switchRoom(newRoom) {
   cleanup();                    // сносит тайлы/таймеры, но stage остаётся виден
   // мгновенно показываем пункт назначения в UI, пока идёт reconnect в фоне
   history.replaceState(null, '', '/' + encodeURIComponent(newRoom));
+  rememberCall(newRoom);
   document.title = `meetler :: палата ${newRoom}`;
   const crumb = $('roomCrumb');
   if (crumb) crumb.textContent = newRoom;
   $('grid').innerHTML = '';
-  $('room').value = newRoom;
   try {
-    await join();
+    await enterRoom(newRoom);
   } finally {
     // держим switching до конца входа: поздний Disconnected СТАРОЙ комнаты
     // не должен показать форму входа посреди перехода
@@ -1166,11 +1217,10 @@ let avatarsTimer = null; // опрос галереи, пока в палате 
 async function refreshAvatars() {
   const rm = currentRoom();
   const box = $('avatarThumbs');
-  const cnt = $('avatarCount');
+  const uploadButton = $('avatarUploadBtn');
   if (!rm) {
     avatarList = [];
-    if (cnt) cnt.textContent = '0';
-    if (box) box.innerHTML = '';
+    if (box) box.replaceChildren(uploadButton);
     document.querySelectorAll('.tile .ph').forEach((ph) => { ph.style.backgroundImage = ''; });
     return;
   }
@@ -1178,12 +1228,10 @@ async function refreshAvatars() {
     const res = await fetch(roomApi(rm) + '/avatars');
     const avatars = (await res.json()) || [];
     avatarList = avatars;
-    if (cnt) cnt.textContent = String(avatars.length);
     // пул изменился — пересчитать назначение без повторов и перекрасить тайлы
     recomputeAvatars();
     if (box) {
-      box.innerHTML = '';
-      if (!avatars.length) box.textContent = 'портретов нет — пациенты ходят со стандартными';
+      box.replaceChildren(uploadButton);
       for (const a of avatars) {
         const th = document.createElement('div');
         th.className = 'thumb rar' + rarityForId(a.id); // палитра раритетности
@@ -1194,10 +1242,10 @@ async function refreshAvatars() {
         img.loading = 'lazy';
         th.appendChild(img);
         // лайк: чем больше лайков — тем реже портрет выдаётся. Тоггл по клику.
-        const like = document.createElement('button');
-        like.className = 'like';
-        like.textContent = '♥ ' + (a.likes || 0);
-        like.title = 'Лайк (чем больше — тем реже выпадает)';
+        const like = createButton('♥ ' + (a.likes || 0), {
+          className: 'icon-button icon-button--small like',
+          title: 'Лайк (чем больше — тем реже выпадает)',
+        });
         like.onclick = async (e) => {
           e.stopPropagation();
           try {
@@ -1216,19 +1264,12 @@ async function refreshAvatars() {
           }
         };
         th.appendChild(like);
-        // удаление портрета — ПО ГОЛОСАМ (нужно 3), цвет крестика = прогресс
-        const del = document.createElement('button');
-        del.textContent = '✕';
-        del.title = 'Голос за удаление (нужно 3)';
-        del.dataset.vkey = 'avatar:' + a.id;
-        del.onclick = async () => {
-          const r = await castVote(rm, 'avatar', a.id);
-          if (!r) { const e = $('avatarErr'); if (e) e.textContent = 'Голос не засчитан'; return; }
-          applyVoteColor(del, r.done ? 3 : r.count);
-          if (r.done) await refreshAvatars();
-        };
+        const del = createVoteButton({
+          kind: 'avatar', target: a.id, roomName: rm, compact: true,
+          errorId: 'avatarErr', onDone: refreshAvatars,
+        });
         th.appendChild(del);
-        box.appendChild(th);
+        box.insertBefore(th, uploadButton);
       }
     }
     refreshVotes(); // прогресс голосов за удаление портретов
@@ -1334,7 +1375,7 @@ function applyAvatarToPh(ph) {
   const sid = tile && tile.dataset.sid;
   if (!sid) return;
   const u = avatarUrlFor(sid);
-  // '' → фон из CSS (дефолтный /avatar.jpg)
+  // Пока портрет загружается, остаётся однотонный фон.
   ph.style.backgroundImage = u ? `url(${u})` : '';
 }
 
@@ -1423,65 +1464,91 @@ async function compressImage(file, maxDim, quality) {
 
 // галерея портретов живёт в палате (not на главной): обновляется из join()
 
-// --- звук приветствия палаты: кастомизация ---
-$('welUploadBtn').onclick = () => $('welFile').click();
-$('welFile').onchange = async () => {
-  const f = $('welFile').files[0];
-  $('welFile').value = '';
-  const e = $('welErr');
-  if (e) e.textContent = '';
-  if (!f || !room) return;
-  try {
-    if (f.size > 2 * 1024 * 1024) throw new Error('больше 2 МБ');
-    if (!/\.(mp3|ogg|oga|wav|m4a|webm|opus)$/i.test(f.name)) throw new Error('разрешены mp3/ogg/wav/m4a/webm/opus');
-    const fd = new FormData();
-    fd.append('file', f);
-    const res = await fetch(roomApi(room.name) + '/welcome', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error((await res.text()) || res.status);
-    if (e) e.textContent = 'звук приветствия обновлён';
-  } catch (err) {
-    if (e) e.textContent = 'Не удалось: ' + (err.message || err);
-  }
-};
-$('welResetBtn').onclick = async () => {
-  if (!room) return;
-  const e = $('welErr');
-  try {
-    await fetch(roomApi(room.name) + '/welcome', { method: 'DELETE' });
-    if (e) e.textContent = 'вернули дефолтный';
-  } catch (_) {}
-};
-$('welTestBtn').onclick = () => playWelcome();
+// Одна строка управления для обоих джинглов палаты.
+function createCueControl(kind, label) {
+  const container = document.createElement('div');
+  const row = document.createElement('div');
+  row.className = 'cue-row';
+  const name = document.createElement('span');
+  name.textContent = label;
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.hidden = true;
+  file.accept = '.mp3,.ogg,.oga,.wav,.m4a,.webm,.opus';
+  const error = document.createElement('div');
+  error.className = 'cue-error';
+  error.setAttribute('role', 'alert');
+  const preview = createButton('▶', {
+    className: 'icon-button', title: `Прослушать: ${label.toLowerCase()}`,
+    onClick: () => playCue(kind, `/${kind}.mp3`),
+  });
+  const upload = createButton('+', {
+    className: 'icon-button', title: `Загрузить звук: ${label.toLowerCase()}`,
+    onClick: () => file.click(),
+  });
+  const reset = createButton('✕', {
+    className: 'icon-button remove-button', title: 'Вернуть стандартный звук',
+    onClick: () => save('DELETE'),
+  });
+  reset.hidden = true;
+  row.append(name, preview, upload, reset);
+  container.append(row, file, error);
+  $('cueRows').appendChild(container);
+  let revision = 0;
 
-// --- звук прощания палаты: кастомизация (симметрично welcome) ---
-$('farUploadBtn').onclick = () => $('farFile').click();
-$('farFile').onchange = async () => {
-  const f = $('farFile').files[0];
-  $('farFile').value = '';
-  const e = $('farErr');
-  if (e) e.textContent = '';
-  if (!f || !room) return;
-  try {
-    if (f.size > 2 * 1024 * 1024) throw new Error('больше 2 МБ');
-    if (!/\.(mp3|ogg|oga|wav|m4a|webm|opus)$/i.test(f.name)) throw new Error('разрешены mp3/ogg/wav/m4a/webm/opus');
-    const fd = new FormData();
-    fd.append('file', f);
-    const res = await fetch(roomApi(room.name) + '/farewell', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error((await res.text()) || res.status);
-    if (e) e.textContent = 'звук прощания обновлён';
-  } catch (err) {
-    if (e) e.textContent = 'Не удалось: ' + (err.message || err);
+  async function refresh() {
+    const activeRoom = room;
+    const currentRevision = ++revision;
+    reset.hidden = true;
+    error.textContent = '';
+    if (!activeRoom) return;
+    try {
+      const custom = await hasCustomCue(activeRoom.name, kind);
+      if (room !== activeRoom || revision !== currentRevision) return;
+      reset.hidden = !custom;
+    } catch (err) {
+      if (room === activeRoom && revision === currentRevision) error.textContent = err.message;
+    }
   }
-};
-$('farResetBtn').onclick = async () => {
-  if (!room) return;
-  const e = $('farErr');
-  try {
-    await fetch(roomApi(room.name) + '/farewell', { method: 'DELETE' });
-    if (e) e.textContent = 'вернули дефолтный';
-  } catch (_) {}
-};
-$('farTestBtn').onclick = () => playFarewell();
+
+  async function save(method, selectedFile) {
+    const activeRoom = room;
+    if (!activeRoom || upload.disabled) return;
+    ++revision;
+    error.textContent = '';
+    upload.disabled = reset.disabled = true;
+    try {
+      let body;
+      if (selectedFile) {
+        if (selectedFile.size > 2 * 1024 * 1024) throw new Error('Файл слишком большой');
+        if (!/\.(mp3|ogg|oga|wav|m4a|webm|opus)$/i.test(selectedFile.name)) throw new Error('Неподдерживаемый аудиофайл');
+        body = new FormData();
+        body.append('file', selectedFile);
+      }
+      const res = await fetch(roomApi(activeRoom.name) + '/' + kind, { method, body });
+      if (!res.ok) throw new Error((await res.text()) || res.status);
+      if (room !== activeRoom) return;
+      reset.hidden = method === 'DELETE';
+      broadcastSfxUpdate();
+    } catch (err) {
+      if (room === activeRoom) error.textContent = 'Не удалось: ' + err.message;
+    } finally {
+      upload.disabled = reset.disabled = false;
+    }
+  }
+
+  file.onchange = () => {
+    const selectedFile = file.files[0];
+    file.value = '';
+    if (selectedFile) save('POST', selectedFile);
+  };
+  return { refresh };
+}
+
+const cueControls = [['welcome', 'Вход'], ['farewell', 'Выход']].map(([kind, label]) => createCueControl(kind, label));
+function refreshCueControls() {
+  cueControls.forEach((control) => control.refresh());
+}
 
 // --- тумблер темы (светлая / Solarized dark), запоминается в localStorage ---
 function applyTheme(t) {
@@ -1491,7 +1558,6 @@ function applyTheme(t) {
 $('themeToggle').onclick = () => {
   applyTheme(document.body.classList.contains('dark') ? 'light' : 'dark');
 };
-applyTheme(localStorage.getItem('meetlerTheme') === 'dark' ? 'dark' : 'light');
 
 // --- центральная аутентификация: общий пароль на всё приложение ---
 // На загрузке спрашиваем сервер, авторизованы ли мы (cookie). Если нет —
@@ -1509,21 +1575,32 @@ async function submitGate() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: pass }),
     });
-    if (res.ok) { hideGate(); return; }
+    if (res.ok) { hideGate(); await enterRoom(); return; }
     $('gateErr').textContent = res.status === 401 ? 'Неверный пароль' : 'Ошибка входа';
   } catch (_) {
     $('gateErr').textContent = 'Сервер недоступен';
   }
 }
 
-(async function initGate() {
-  if (!gateEl) return;
+async function checkAccess() {
+  if (page.dataset.callState === 'restoring') setCallState('restoring');
   try {
     const res = await fetch('/api/auth'); // 200 если cookie валиден или гейт выключен
-    if (!res.ok) showGate();
-  } catch (_) { showGate(); }
+    if (res.status === 401) { showGate(); return; }
+    if (!res.ok) throw new Error('Сервер недоступен');
+    hideGate();
+    await enterRoom();
+  } catch (_) {
+    if (page.dataset.callState === 'restoring') setCallState('restoring', 'Не удалось связаться с сервером.');
+    else showGate();
+  }
+}
+
+(function initGate() {
+  if (!gateEl) return;
   $('gateBtn').onclick = submitGate;
   $('gatePass').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitGate(); });
+  checkAccess();
 })();
 
 // --- облако диагнозов МКБ-10 (класс V: психические и поведенческие, F00-F99) ---
@@ -1751,25 +1828,31 @@ if (tgRecBtn) tgRecBtn.onclick = async () => {
 // свой уход: помечаем, чтобы Disconnected не показал "вас выписали"
 let selfLeaving = false;
 let switching = false; // смена палаты: cleanup не прячет stage (без мигания)
-$('leaveBtn').onclick = () => {
+function leaveCall() {
+  forgetCall();
+  setCallState();
   selfLeaving = true;
   if (room) room.disconnect();
-};
+  else { selfLeaving = false; cleanup(); }
+}
+$('leaveBtn').onclick = leaveCall;
+$('restoreLeaveBtn').onclick = leaveCall;
+$('restoreRetryBtn').onclick = () => checkAccess();
 
 function cleanup() {
-  // сначала глушим колбэк записи: ScriptProcessor может тикнуть между
-  // disconnect и обнулением буферов → "Cannot set properties of null"
-  try { if (recProc) recProc.onaudioprocess = null; } catch (_) {}
-  try { if (recProc) recProc.disconnect(); } catch (_) {}
+  refreshCueControls();
+  // отключить сообщения воркета до сброса буфера записи
+  if (recNode) recNode.port.onmessage = null;
+  try { if (recNode) recNode.disconnect(); } catch (_) {}
   try { if (recCtx) recCtx.close(); } catch (_) {}
-  recCtx = null; recProc = null; recMixGain = null; recRing = null;
+  recCtx = null; recNode = null; recMixGain = null; recRing = null;
   recWritePos = 0; recFilled = 0;
   tiles.forEach((t) => t.el.remove());
   tiles.clear();
   if (localTile) { localTile.remove(); localTile = null; }
   document.body.classList.remove('tile-maximized'); // сбросить разворот
   screenTracks = []; // сброс состояния демонстрации
-  { const b = $('shareBtn'); if (b) { b.textContent = 'Демонстрация'; b.classList.remove('danger'); } }
+  syncMediaButtons();
   if (avatarsTimer) { clearInterval(avatarsTimer); avatarsTimer = null; }
   if (wnavTimer) { clearInterval(wnavTimer); wnavTimer = null; }
   if (votesTimer) { clearInterval(votesTimer); votesTimer = null; }
@@ -1777,12 +1860,10 @@ function cleanup() {
   stopStats();
   // при смене палаты stage остаётся виден (мгновенный переход, без мигания
   // формы входа); обычный выход — прячем stage и возвращаем форму
-  if (switching) return;
+  if (switching || page.dataset.callState === 'restoring') return;
   // room обнуляет Disconnected-хендлер (инстанс-гард): cleanup не знает,
   // какая комната владеет UI во время смены палаты
-  $('stage').style.display = 'none';
-  $('join').style.display = 'block';
-  $('joinBtn').disabled = false;
+  setCallState();
   refreshRooms(); // вернулись на главную — обновить список палат
 }
 
@@ -1791,8 +1872,10 @@ let statsTimer = null;
 function startStats() {
   statsTimer = setInterval(() => {
     if (!room) return;
-    const q = room.localParticipant.connectionQuality;
-    $('stats').textContent = `link: ${q} · peers: ${room.numParticipants}`;
+    const quality = {
+      excellent: 'отличная', good: 'хорошая', poor: 'плохая', lost: 'потеряна', unknown: 'неизвестна',
+    }[room.localParticipant.connectionQuality] || 'неизвестна';
+    $('stats').textContent = `Связь: ${quality} · Участников: ${room.numParticipants}`;
   }, 1000);
 }
 function stopStats() {

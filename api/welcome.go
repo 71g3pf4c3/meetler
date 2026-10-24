@@ -84,7 +84,7 @@ func (sb *soundboard) cueDispatch(w http.ResponseWriter, r *http.Request, room, 
 		return
 	}
 	switch r.Method {
-	case http.MethodGet:
+	case http.MethodGet, http.MethodHead:
 		sb.cueServe(w, r, room, kind)
 	case http.MethodPost:
 		sb.cueUpload(w, r, room, kind)

@@ -82,6 +82,12 @@ type voteResponse struct {
 	Count     int  `json:"count"`
 	Threshold int  `json:"threshold"`
 	Done      bool `json:"done"`
+	Voted     bool `json:"voted"`
+}
+
+type voteSnapshot struct {
+	Counts map[string]int  `json:"counts"`
+	Voted  map[string]bool `json:"voted"`
 }
 
 // thresholdFor: tgbridge — служебный участник (мост), а не пациент: его
@@ -93,7 +99,7 @@ func thresholdFor(kind, target string) int {
 	return voteThreshold
 }
 
-// POST /api/rooms/<room>/votes — отдать голос. Возвращает текущий счётчик;
+// POST /api/rooms/<room>/votes — добавить или отозвать свой голос;
 // при достижении порога исполняет действие на сервере и сбрасывает голоса.
 func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 	var req voteRequest
@@ -120,14 +126,22 @@ func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 	th := thresholdFor(req.Kind, req.Target)
 
 	vs.mu.Lock()
+	vs.countLive(k)
 	if vs.v[k] == nil {
 		vs.v[k] = map[string]time.Time{}
 	}
-	vs.v[k][voter] = time.Now()
-	n := vs.countLive(k)
+	_, voted := vs.v[k][voter]
+	if voted {
+		delete(vs.v[k], voter)
+	} else {
+		vs.v[k][voter] = time.Now()
+	}
+	voted = !voted
+	n := len(vs.v[k])
 	done := n >= th
-	if done {
-		delete(vs.v, k) // порог взят — сбрасываем, чтобы не исполнить дважды
+	if done || n == 0 {
+		delete(vs.v, k)
+		voted = false
 	}
 	vs.mu.Unlock()
 
@@ -136,25 +150,35 @@ func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(voteResponse{Count: n, Threshold: th, Done: done})
+	_ = json.NewEncoder(w).Encode(voteResponse{Count: n, Threshold: th, Done: done, Voted: voted})
 }
 
 // GET /api/rooms/<room>/votes — текущие счётчики всех активных голосований
-// палаты: map "kind:target" -> count. Для раскраски кнопок у всех клиентов.
-func (vs *voteStore) list(w http.ResponseWriter, _ *http.Request, room string) {
+// палаты. С ?voter= возвращает также состояние собственного голоса.
+func (vs *voteStore) list(w http.ResponseWriter, r *http.Request, room string) {
 	out := map[string]int{}
+	voter := strings.TrimSpace(r.URL.Query().Get("voter"))
+	voted := map[string]bool{}
 	vs.mu.Lock()
 	for k := range vs.v {
 		if k.room != room {
 			continue
 		}
 		if n := vs.countLive(k); n > 0 {
-			out[k.kind+":"+k.target] = n
+			key := k.kind + ":" + k.target
+			out[key] = n
+			if _, ok := vs.v[k][voter]; ok {
+				voted[key] = true
+			}
 		}
 	}
 	vs.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	if voter != "" {
+		_ = json.NewEncoder(w).Encode(voteSnapshot{Counts: out, Voted: voted})
+		return
+	}
 	_ = json.NewEncoder(w).Encode(out)
 }
 
