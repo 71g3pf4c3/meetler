@@ -7,6 +7,7 @@ import {
   LocalAudioTrack,
   DisconnectReason,
   createLocalScreenTracks,
+  getBrowser,
 } from '/vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
 
 const $ = (id) => document.getElementById(id);
@@ -839,7 +840,7 @@ $('shareBtn').onclick = async () => {
     return;
   }
   try {
-    const tracks = await createLocalScreenTracks({ audio: true });
+    const tracks = await createLocalScreenTracks({ audio: getBrowser()?.name !== 'Firefox' });
     for (const t of tracks) {
       await room.localParticipant.publishTrack(t);
       // пользователь жмёт "Остановить доступ" в системной плашке браузера →
