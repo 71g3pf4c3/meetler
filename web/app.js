@@ -866,7 +866,7 @@ async function stopShare() {
 // --- Soundboard: проиграть звук по URL для ВСЕХ в палате (как ГОЙДА) ---
 let sfxCtx = null;
 const sfxCache = new Map();   // url -> decoded AudioBuffer
-let sfxBusy = false;          // не наслаиваем звуки друг на друга
+let activeSfx = null;
 let sfxMonitorGain = null;    // активный gain локального монитора (для live-ползунка)
 
 async function loadBuffer(url) {
@@ -904,6 +904,10 @@ function gainForBurst(id) {
 // Счётчик живёт в localStorage НЕ нужен — наказание = self-kick, перезагрузка
 // как «поблажка» допустима (стейт только в памяти вкладки).
 function onSfxClick(s, btnEl) {
+  if (activeSfx?.id === s.id) {
+    activeSfx.stop();
+    return;
+  }
   const now = Date.now();
   const b = burst.get(s.id);
   if (b && now - b.last <= BURST_WINDOW_MS) {
@@ -950,15 +954,26 @@ async function triggerMine(s) {
 // меняет громкость ТОЛЬКО у себя (в палату и в запись — как было).
 // burstId — ключ звука: громкость В ПАЛАТУ масштабируется по бёрсту (DDoS).
 async function playUrlToRoom(url, btnEl, burstId) {
-  if (!room || sfxBusy) return;
-  sfxBusy = true;
-  if (btnEl) btnEl.classList.add('playing');
-  let pub = null, track = null;
+  if (!room || activeSfx) return;
+  const activeRoom = room;
+  let pub = null, track = null, src = null, monitor = null;
+  const playback = {
+    id: burstId, button: btnEl, stopped: false,
+    stop() {
+      playback.stopped = true;
+      try { src?.stop(); } catch (_) {}
+      playback.button?.classList.remove('playing');
+    },
+  };
+  activeSfx = playback;
+  playback.button?.classList.add('playing');
   try {
     const buffer = await loadBuffer(url);
+    if (playback.stopped) return;
     if (sfxCtx.state === 'suspended') await sfxCtx.resume();
+    if (playback.stopped) return;
 
-    const src = sfxCtx.createBufferSource();
+    src = sfxCtx.createBufferSource();
     src.buffer = buffer;
     const dest = new MediaStreamAudioDestinationNode(sfxCtx, { channelCount: 1 });
     // громкость В ПАЛАТУ масштабируется бёрстом (спам кликов → громче всем)
@@ -967,7 +982,7 @@ async function playUrlToRoom(url, btnEl, burstId) {
     // Смешиваем L+R в mono до публикации.
     src.connect(roomGain);
     roomGain.connect(dest);          // в палату (через бёрст-усиление)
-    const monitor = sfxCtx.createGain();
+    monitor = sfxCtx.createGain();
     monitor.gain.value = sbVolume(); // индивидуальная громкость (у себя)
     sfxMonitorGain = monitor;        // чтобы ползунок менял её НА ЛЕТУ
     src.connect(monitor);
@@ -976,9 +991,10 @@ async function playUrlToRoom(url, btnEl, burstId) {
     const mst = dest.stream.getAudioTracks()[0];
     addToRecordMix(mst);             // попадает в запись 15с
     track = new LocalAudioTrack(mst);
-    pub = await room.localParticipant.publishTrack(track, {
+    pub = await activeRoom.localParticipant.publishTrack(track, {
       name: 'sfx', source: Track.Source.Unknown,
     });
+    if (playback.stopped) return;
 
     await new Promise((resolve) => {
       // кэп длительности: дольше 20с в эфир не льём (форсированное обрезание)
@@ -986,14 +1002,17 @@ async function playUrlToRoom(url, btnEl, burstId) {
       src.onended = () => { clearTimeout(cap); resolve(); };
       src.start();
     });
-    await new Promise((r) => setTimeout(r, 300)); // хвост для подписчиков
+    if (!playback.stopped) await new Promise((r) => setTimeout(r, 300)); // хвост для подписчиков
   } catch (e) {
-    $('err').textContent = 'Звук не удался: ' + (e.message || e);
+    if (!playback.stopped) $('err').textContent = 'Звук не удался: ' + (e.message || e);
   } finally {
-    try { if (pub) await room.localParticipant.unpublishTrack(track); } catch (_) {}
+    playback.stop();
+    try { if (pub) await activeRoom.localParticipant.unpublishTrack(track); } catch (_) {}
+    track?.stop();
+    src?.disconnect();
+    monitor?.disconnect();
     sfxMonitorGain = null;
-    if (btnEl) btnEl.classList.remove('playing');
-    sfxBusy = false;
+    activeSfx = null;
   }
 }
 
@@ -1036,6 +1055,10 @@ async function refreshSoundboard() {
       row.className = 'sfxrow';
       const b = createButton(s.label, { className: 'sfx' });
       b.onclick = () => onSfxClick(s, b);
+      if (activeSfx?.id === s.id) {
+        activeSfx.button = b;
+        b.classList.toggle('playing', !activeSfx.stopped);
+      }
       const del = createVoteButton({
         kind: 'sound', target: s.id, errorId: 'sbErr',
         onDone: async () => { await refreshSoundboard(); broadcastSfxUpdate(); },
@@ -1883,6 +1906,7 @@ $('restoreLeaveBtn').onclick = leaveCall;
 $('restoreRetryBtn').onclick = () => checkAccess();
 
 function cleanup() {
+  activeSfx?.stop();
   refreshCueControls();
   // отключить сообщения воркета до сброса буфера записи
   if (recNode) recNode.port.onmessage = null;
