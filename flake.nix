@@ -16,6 +16,9 @@
       mkWeb = pkgs: pkgs.runCommand "meetler-web" { } ''
         mkdir -p $out
         cp -r ${./web}/. $out/
+        ph=$(sha256sum $out/poker.js | cut -c1-12)
+        substituteInPlace $out/app.js \
+          --replace-fail "from '/poker.js'" "from '/poker.js?v=$ph'"
         ah=$(sha256sum $out/app.js | cut -c1-12)
         ch=$(sha256sum $out/critters.js | cut -c1-12)
         substituteInPlace $out/index.html \

@@ -9,13 +9,15 @@ import {
   createLocalScreenTracks,
   getBrowser,
 } from '/vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
+import { createPokerTable } from '/poker.js';
 
 const $ = (id) => document.getElementById(id);
 const page = document.documentElement;
 const grid = $('grid');
 const tiles = new Map(); // participant.sid -> { el, videoEl }
-const callPanels = document.querySelectorAll('#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues');
+const callPanels = document.querySelectorAll('#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues, #poker');
 const joinButtons = document.querySelectorAll('#createBtn, #renameBtn');
+const poker = createPokerTable(goToJail);
 
 let room = null;
 let microphoneTrack = null;
@@ -24,7 +26,10 @@ let joining = false;
 let leavingPage = false;
 // LiveKit disconnects on page leave; keep the outgoing call view intact.
 for (const event of ['beforeunload', 'pagehide']) {
-  window.addEventListener(event, () => { leavingPage = true; }, { capture: true });
+  window.addEventListener(event, () => {
+    leavingPage = true;
+    if (event === 'pagehide') poker.disconnect();
+  }, { capture: true });
 }
 window.addEventListener('pageshow', () => { leavingPage = false; });
 function setCallState(state = '', error = '') {
@@ -53,6 +58,14 @@ function forgetCall() {
   sessionStorage.removeItem('meetlerCall');
   microphoneTrack?.stop();
   microphoneTrack = null;
+}
+
+function goToJail() {
+  leavingPage = true;
+  poker.disconnect();
+  forgetCall();
+  room?.disconnect();
+  location.href = '/jail.html';
 }
 
 async function enterRoom(roomName = palataFromPath()) {
@@ -491,6 +504,7 @@ async function join(roomName = palataFromPath()) {
     enableAudio();
 
     setCallState('connected');
+    poker.connect(roomName, name, room.localParticipant.identity);
     refreshCueControls();
     refreshSoundboard();
     if (sbTimer) clearInterval(sbTimer);
@@ -591,8 +605,7 @@ function wireRoomEvents(r) {
     if (room !== r) return;
     // личный кик (RemoveParticipant) → страница "тюрьма" с плохой концовкой
     if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
-      forgetCall();
-      location.href = '/jail.html';
+      goToJail();
       return;
     }
     // отличаем свой уход/закрытие палаты от потери связи: сообщение об ошибке
@@ -945,7 +958,7 @@ async function triggerMine(s) {
     });
   } catch (_) {}
   // Disconnected(PARTICIPANT_REMOVED) сам уведёт на /jail.html; подстрахуемся
-  setTimeout(() => { if (location.pathname !== '/jail.html') location.href = '/jail.html'; }, 1500);
+  setTimeout(() => { if (location.pathname !== '/jail.html') goToJail(); }, 1500);
 }
 
 // проигрывает url: публикует в палату (слышат все) + локально + в запись 15с.
@@ -1240,6 +1253,7 @@ async function refreshWardNav() {
 // join() — ник тянется из localStorage/поля, ничего вводить заново не надо.
 async function switchRoom(newRoom, rejoin = false) {
   if (!room || joining || switching || $('micBtn').disabled || (!rejoin && newRoom === room.name)) return;
+  poker.disconnect();
   switching = true;             // cleanup не будет прятать stage (без мигания)
   setCallState('restoring');
   selfLeaving = true;
@@ -1895,6 +1909,7 @@ if (tgRecBtn) tgRecBtn.onclick = async () => {
 let selfLeaving = false;
 let switching = false; // смена палаты: cleanup не прячет stage (без мигания)
 function leaveCall() {
+  poker.disconnect();
   forgetCall();
   setCallState();
   selfLeaving = true;
@@ -1906,6 +1921,7 @@ $('restoreLeaveBtn').onclick = leaveCall;
 $('restoreRetryBtn').onclick = () => checkAccess();
 
 function cleanup() {
+  poker.disconnect();
   activeSfx?.stop();
   refreshCueControls();
   // отключить сообщения воркета до сброса буфера записи

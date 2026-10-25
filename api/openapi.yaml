@@ -24,6 +24,8 @@ tags:
     description: Custom greeting and goodbye sounds
   - name: Telegram
     description: Forward room recordings to linked Telegram chats
+  - name: Poker
+    description: Six seats, 1000 virtual chips, 5/10 blinds. Tables reset on API restart.
 paths:
   /healthz:
     get:
@@ -503,6 +505,208 @@ paths:
           $ref: '#/components/responses/ProtectedRoom'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    get:
+      operationId: getPokerTable
+      tags: [Poker]
+      summary: Get the room's poker table
+      description: Include X-Poker-Player to see your hole cards.
+      parameters:
+        - name: X-Poker-Player
+          in: header
+          schema:
+            $ref: '#/components/schemas/PokerPlayerKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/PokerTable'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/seats:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: sitAtPokerTable
+      tags: [Poker]
+      summary: Take a seat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seat, identity]
+              properties:
+                seat:
+                  type: integer
+                  minimum: 0
+                  maximum: 5
+                name:
+                  type: string
+                  description: Display name.
+                identity:
+                  $ref: '#/components/schemas/Identity'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/seats/me:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    delete:
+      operationId: leavePokerTable
+      tags: [Poker]
+      summary: Leave the table
+      description: Frees the seat immediately. Committed bets stay in the pot.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/deal:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: dealPokerHand
+      tags: [Poker]
+      summary: Deal the next hand
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/refill:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: refillPokerChips
+      tags: [Poker]
+      summary: Refill an empty stack between hands
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/fold:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: foldPokerHand
+      tags: [Poker]
+      summary: Fold your hand
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/check:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: checkPokerBet
+      tags: [Poker]
+      summary: Check
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/call:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: callPokerBet
+      tags: [Poker]
+      summary: Call the current bet
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/raise:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: raisePokerBet
+      tags: [Poker]
+      summary: Bet or raise
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: integer
+                  minimum: 0
+                  description: Total contribution for the current betting round.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /api/rooms/{room}/{cue}:
     parameters:
       - $ref: '#/components/parameters/Room'
@@ -633,6 +837,12 @@ components:
       name: meetler_auth
       description: Obtained through POST /api/auth. Required only when APP_PASSWORD is configured.
   parameters:
+    PokerPlayer:
+      name: X-Poker-Player
+      in: header
+      required: true
+      schema:
+        $ref: '#/components/schemas/PokerPlayerKey'
     Room:
       name: room
       in: path
@@ -679,6 +889,107 @@ components:
                 type: string
                 format: binary
   schemas:
+    PokerPlayerKey:
+      type: string
+      minLength: 16
+      maxLength: 64
+      pattern: '^[a-zA-Z0-9_-]{16,64}$'
+      description: Private client-generated random key identifying your seat.
+    PokerCard:
+      type: integer
+      minimum: 0
+      maximum: 51
+      description: Rank is value % 13 (2 through ace); suit is floor(value / 13) (spades, hearts, diamonds, clubs).
+    PokerSeat:
+      type: object
+      nullable: true
+      required: [name, chips, bet, inHand, folded, you, cardCount]
+      properties:
+        name:
+          type: string
+        chips:
+          type: integer
+          minimum: 0
+        bet:
+          type: integer
+          minimum: 0
+          description: Contribution for the current betting round.
+        inHand:
+          type: boolean
+        folded:
+          type: boolean
+        lastAction:
+          type: string
+          enum: [smallBlind, bigBlind, fold, check, call, bet, raise]
+        lastAmount:
+          type: integer
+          minimum: 0
+        net:
+          type: integer
+          description: Net chip change for the completed hand.
+        you:
+          type: boolean
+        cardCount:
+          type: integer
+          minimum: 0
+          maximum: 2
+        cards:
+          type: array
+          maxItems: 2
+          description: Your hole cards, or an opponent's cards at showdown.
+          items:
+            $ref: '#/components/schemas/PokerCard'
+    PokerState:
+      type: object
+      required: [seats, board, dealer, turn, bet, minRaise, pot, hand, street, result, deadline, canDeal, canRaise]
+      properties:
+        seats:
+          type: array
+          minItems: 6
+          maxItems: 6
+          items:
+            $ref: '#/components/schemas/PokerSeat'
+        board:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/PokerCard'
+        dealer:
+          type: integer
+          minimum: -1
+          maximum: 5
+        turn:
+          type: integer
+          minimum: -1
+          maximum: 5
+          description: Acting seat, or -1 between hands.
+        bet:
+          type: integer
+          minimum: 0
+          description: Current bet to match.
+        minRaise:
+          type: integer
+          minimum: 10
+          description: Minimum full raise increment.
+        pot:
+          type: integer
+          minimum: 0
+        hand:
+          type: integer
+          minimum: 0
+        street:
+          type: string
+          enum: [waiting, preflop, flop, turn, river, finished]
+        result:
+          type: string
+        deadline:
+          type: integer
+          format: int64
+          description: Turn deadline as Unix milliseconds; zero between hands.
+        canDeal:
+          type: boolean
+        canRaise:
+          type: boolean
     RoomName:
       type: string
       minLength: 1
@@ -810,6 +1121,18 @@ components:
         type: string
         example: bytes 0-1023/2048
   responses:
+    PokerConflict:
+      description: Seat unavailable, wrong turn, or illegal move.
+      content:
+        text/plain:
+          schema:
+            type: string
+    PokerTable:
+      description: Current table state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PokerState'
     NoContent:
       description: Completed.
     BadRequest:

@@ -200,6 +200,95 @@
     .cue-error { color: var(--error-text); font-size: 11px; margin-top: 4px; }
     .cue-error:empty { display: none; }
 
+    #poker > .body { background: #1c1c1c; }
+    .poker-info, .poker-actions {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    }
+    .poker-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 6px; }
+    .poker-info { justify-content: flex-end; gap: 4px; margin-left: auto; min-width: 0; }
+    .poker-info .poker-stat { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+    .poker-table {
+      --poker-card-width: 34px;
+      --poker-card-height: 46px;
+      --poker-hand-width: calc(2 * var(--poker-card-width) + 4px);
+      --poker-felt: #176b42;
+      display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 6px;
+      background: var(--poker-felt);
+    }
+    .poker-players { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: 100%; max-width: 642px; justify-self: center; }
+    .poker-seat {
+      min-width: 0; width: 210px; max-width: 100%; min-height: 64px; padding: 4px;
+      border: 1px solid var(--control-border); background: var(--control-bg);
+      display: grid; align-content: center; gap: 3px; text-align: center;
+    }
+    .poker-seat.acting { background: #d7e6c9; color: #000; border-color: #176b42; }
+    .poker-seat.folded { opacity: .55; }
+    .poker-stat {
+      padding: 2px 4px;
+      border: 1px solid var(--control-border); background: var(--control-bg); color: var(--control-text);
+      border-top-color: var(--control-light); border-left-color: var(--control-light);
+      box-shadow: 1px 1px 0 rgba(0,0,0,.2);
+      font-size: 11px; line-height: 1.2; white-space: nowrap;
+    }
+    .poker-seat-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: bold; }
+    .poker-seat-info { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+    .poker-seat-stats { min-width: 0; }
+    .poker-seat-cards, .poker-cards { display: flex; justify-content: center; gap: 4px; }
+    .poker-board {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; padding: 12px 0;
+    }
+    .poker-board > .poker-cards { grid-column: 2; }
+    .poker-pot, #pokerSelfChips {
+      display: grid; place-items: center; justify-self: end; height: var(--poker-card-height);
+      width: var(--poker-card-width); max-width: none;
+      padding: 2px 1px; white-space: nowrap; overflow-wrap: normal; font-variant-numeric: tabular-nums;
+    }
+    .poker-board > .poker-pot { grid-column: 3; justify-self: start; }
+    #pokerSelfChips, #pokerActor { display: flex; align-items: center; justify-content: center; gap: 4px; }
+    .poker-card {
+      display: inline-grid; place-items: center; flex: 0 0 var(--poker-card-width);
+      width: var(--poker-card-width); height: var(--poker-card-height);
+      border: 1px solid var(--control-border); background: var(--control-bg);
+      border-top-color: var(--control-light); border-left-color: var(--control-light);
+      color: var(--control-text); font: bold 16px/1 "Courier New", monospace;
+    }
+    .poker-card.red { color: var(--error-text); }
+    .poker-card.empty { background: var(--poker-felt); border-color: var(--control-border); }
+    #poker [hidden] { display: none; }
+    .poker-self {
+      grid-column: 1 / -1; min-width: 0;
+      display: grid; grid-template-columns: minmax(0, 1fr) var(--poker-hand-width) minmax(0, 1fr); align-items: end; gap: 4px 6px;
+    }
+    #pokerSelfAction { grid-column: 2; grid-row: 1; text-align: center; white-space: normal; overflow-wrap: anywhere; }
+    #pokerSelfChips { grid-column: 1; grid-row: 2; }
+    #pokerHand { grid-column: 2; grid-row: 2; width: var(--poker-hand-width); justify-self: center; }
+    .poker-self-controls { grid-column: 3; grid-row: 2; display: flex; flex-wrap: wrap; align-items: end; gap: 6px; min-width: 0; }
+    @media (max-width: 600px) {
+      .poker-self-controls { grid-column: 1 / -1; grid-row: 3; justify-content: center; }
+    }
+    .poker-stat.chips, .poker-stat.check, .poker-stat.call, .poker-stat.profit { background: var(--primary-bg); color: var(--primary-text); }
+    .poker-stat.fold, .poker-stat.loss { background: var(--danger-bg); color: var(--danger-text); }
+    .poker-stat.bet, .poker-stat.raise { background: var(--selected-bg); color: var(--selected-text); }
+    .poker-actions { margin: 0; }
+    #pokerDeal { height: var(--poker-card-height); }
+    .poker-control-column { display: flex; flex-direction: column; gap: 0; height: var(--poker-card-height); }
+    .poker-control-column > * { flex: 1 1 0; min-height: 0; margin: 0; }
+    .poker-control-column > * + * { border-top-width: 0; }
+    .poker-bet { width: 88px; }
+    #pokerBet {
+      width: 100%; min-width: 0; padding: 2px 4px; border-radius: 0;
+      border: 1px solid var(--control-border);
+      border-right-color: var(--control-light); border-bottom-color: var(--control-light);
+      background: var(--control-bg); color: var(--control-text);
+      font: inherit; font-size: 11px; text-align: center;
+      box-shadow: inset 1px 1px 0 rgba(0,0,0,.2);
+      -moz-appearance: textfield; appearance: textfield;
+    }
+    #pokerBet:focus-visible { outline: 2px solid var(--control-focus); outline-offset: -2px; }
+    #pokerBet::-webkit-inner-spin-button, #pokerBet::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    #pokerErr { color: var(--error-text); margin-top: 4px; }
+    #pokerErr:empty { display: none; }
+
     /* приёмное отделение: картинка-баннер */
     .priem img { width: 100%; height: auto; display: block; }
 
@@ -449,8 +538,10 @@
        сворачивает/разворачивает (нативный <details>, без JS). Единый вид для
        всех списков: вход, палаты, аптечка, портреты, приветствие. */
     details.post {
-      border: 1px solid #a0a0a0; background: #f7f3ea; margin-bottom: 10px;
+      border: 1px solid var(--control-border); background: #f7f3ea; margin-bottom: 10px;
+      border-top: 0;
       border-left: 3px solid var(--red);
+      box-shadow: 1px 1px 0 rgba(0,0,0,.2);
     }
     details.post > summary {
       list-style: none; cursor: pointer; user-select: none;
@@ -476,7 +567,7 @@
     /* ряд управления-строкой (кнопка + ползунок + аплоад) — компактно */
     .ctl-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
-    body.dark details.post { background: #002b36; border-color: #073642; border-left-color: var(--control-hover); }
+    body.dark details.post { background: #002b36; border-left-color: var(--control-hover); }
     body.dark details.post > summary::before { color: #b58900; }
 
     /* --- центральная аутентификация: сплэш поверх всего --- */
@@ -669,6 +760,46 @@
             </div>
             <input type="file" id="sbFile" hidden accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
             <div id="sbErr"></div>
+          </div>
+        </details>
+
+        <details class="post" id="poker" open>
+          <summary>Покер</summary>
+          <div class="body">
+            <div id="pokerTable" class="poker-table">
+              <div class="poker-toolbar">
+                <button id="pokerLeave" class="danger" type="button" hidden>Встать</button>
+                <div class="poker-info">
+                  <span id="pokerStatus" class="poker-stat" role="status">Ожидание игроков</span>
+                  <span id="pokerActor" class="poker-stat" title="Сейчас ходит" hidden></span>
+                  <span id="pokerClock" class="poker-stat" title="Осталось времени на ход" hidden></span>
+                </div>
+              </div>
+              <div id="pokerPlayers" class="poker-players"></div>
+              <div id="pokerBoard" class="poker-board">
+                <div id="pokerCommunityCards" class="poker-cards" aria-label="Общие карты"></div>
+                <span id="pokerPot" class="poker-stat chips poker-pot" title="Общий банк">0</span>
+              </div>
+              <div id="pokerSelf" class="poker-self" hidden>
+                <span id="pokerSelfAction" class="poker-stat" hidden></span>
+                <span id="pokerSelfChips" class="poker-stat chips" title="Ваш банк"></span>
+                <div id="pokerHand" class="poker-cards" aria-label="Ваши карты"></div>
+                <div id="pokerSelfControls" class="poker-self-controls" hidden>
+                  <form id="pokerActions" class="poker-actions" hidden>
+                    <div class="poker-control-column">
+                      <button id="pokerCall" class="primary" type="button">Чек</button>
+                      <button id="pokerFold" class="danger" type="button">Пас</button>
+                    </div>
+                    <span class="poker-control-column poker-bet">
+                      <input id="pokerBet" class="f" type="number" min="10" step="1" inputmode="numeric" aria-label="Ставка до" required />
+                      <button id="pokerRaise" type="submit">Повысить</button>
+                    </span>
+                  </form>
+                  <button id="pokerDeal" class="primary" type="button">Раздать</button>
+                </div>
+              </div>
+            </div>
+            <div id="pokerErr" role="alert"></div>
           </div>
         </details>
 
