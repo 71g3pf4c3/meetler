@@ -163,6 +163,8 @@
     .media-toggle[aria-pressed="true"] {
       --button-bg: var(--primary-bg); --button-hover: var(--primary-bg); --button-text: var(--primary-text);
     }
+    .media-toggle[aria-busy="true"] { cursor: progress; }
+    .media-toggle[aria-busy="true"]::after { content: '…'; }
     button.danger, .remove-button {
       --button-bg: var(--danger-bg); --button-hover: var(--danger-hover); --button-text: var(--danger-text);
     }
@@ -423,7 +425,7 @@
       background: #1a1a1a center/cover no-repeat;
     }
 
-    #err { color: var(--error-text); font-size: 11px; min-height: 14px; margin-top: 4px; }
+    #err { color: var(--error-text); font-size: 11px; margin-bottom: 8px; }
     #err:empty { display: none; }
 
     /* подвал */
@@ -644,6 +646,7 @@
   </a>
 
   <div id="wrap">
+    <div id="err" role="alert"></div>
     <!-- Общий ник для входа в любую палату и создания новой. -->
     <div id="join">
       <div class="navbar">Вы здесь: <b>Приёмное отделение</b> » Поступить в палату</div>
@@ -660,7 +663,6 @@
             <label for="name">Как представить:</label>
             <input id="name" class="f" placeholder="необязательно (Наполеон и т.п.)" autocomplete="off" />
           </div>
-          <div id="err" role="alert"></div>
         </div>
       </details>
 
@@ -731,8 +733,8 @@
           <button id="restoreLeaveBtn" class="danger">Выйти</button>
         </div>
         <div id="bar">
-          <button id="micBtn" class="media-toggle" aria-pressed="false">Микрофон</button>
-          <button id="camBtn" class="media-toggle" aria-pressed="false">Камера</button>
+          <button id="micBtn" class="media-toggle" aria-pressed="false" autocomplete="off">Микрофон</button>
+          <button id="camBtn" class="media-toggle" aria-pressed="false" autocomplete="off">Камера</button>
           <button id="shareBtn" class="media-toggle" aria-pressed="false">Демонстрация</button>
           <button id="recBtn">Скачать 15с</button>
           <button id="tgRecBtn" title="Отправить последние 15с голосовым в Telegram-группу">15с -&gt; TG</button>
