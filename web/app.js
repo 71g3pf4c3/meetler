@@ -10,6 +10,7 @@ import {
   getBrowser,
 } from '/vendor/livekit-client.esm.mjs';   // локально: без CDN, быстрее, оффлайн-safe
 import { createPokerTable } from '/poker.js';
+import { getAudioContext, resumeAudio, createRecordingMix } from '/audio.js';
 
 const $ = (id) => document.getElementById(id);
 const page = document.documentElement;
@@ -18,10 +19,10 @@ const tiles = new Map(); // participant.sid -> { el, videoEl }
 const callPanels = document.querySelectorAll('#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues, #poker');
 const joinButtons = document.querySelectorAll('#createBtn, #renameBtn');
 const poker = createPokerTable(goToJail);
+const recordingMix = createRecordingMix(ringWrite);
 
 let room = null;
 let microphoneTrack = null;
-let playbackCtx = null;
 let joining = false;
 let leavingPage = false;
 // LiveKit disconnects on page leave; keep the outgoing call view intact.
@@ -272,15 +273,13 @@ function ensureTile(participant) {
   // (welcome/farewell-звук на tgbridge не триггерится — отдельно, ниже.)
 
   // индивидуальная громкость ЭТОГО участника (только у себя).
-  // max=300: БУСТ до 300% — чужой тайл можно "забустить" громче оригинала.
-  // Все входящие аудиотреки участника идут через общий WebAudio GainNode.
   const vol = document.createElement('input');
   vol.type = 'range';
   vol.min = '0';
   vol.max = '300';
   vol.value = '100';
   vol.className = 'vol';
-  vol.title = 'громкость участника (у себя), до 300% — буст';
+  vol.title = 'громкость участника (у себя), до 300%';
   el.appendChild(vol);
 
   const kick = createVoteButton({
@@ -297,35 +296,35 @@ function ensureTile(participant) {
   grid.appendChild(el);
   t = {
     el, videoEl: null, ph, label, kickBtn: kick,
-    audioTracks: new Map(), audioGain: null, sfxGain: null, audioVol: 1,
+    audioTracks: new Map(), audioVol: 1,
   };
   vol.addEventListener('input', () => {
-    t.audioVol = vol.value / 100; // 0..3
+    t.audioVol = vol.value / 100;
     applyTileVolume(t);
   });
   tiles.set(participant.sid, t);
   return t;
 }
 
-// Один путь для громкости 0–300%, без второго воспроизведения через <audio>.
 function applyTileVolume(t) {
-  if (t.audioGain) t.audioGain.gain.value = t.audioVol;
-  if (playbackCtx?.state === 'suspended') playbackCtx.resume().catch(() => {});
+  for (const [track, audio] of t.audioTracks) {
+    track.setVolume(t.audioVol * (audio.soundboard ? sbVolume() : 1));
+  }
 }
 
 function detachAudio(t, track) {
-  const input = t?.audioTracks.get(track);
-  if (!input) return;
-  input.disconnect();
+  recordingMix.removeTrack(track.mediaStreamTrack);
+  const audio = t?.audioTracks.get(track);
+  if (!audio) return;
+  track.detach(audio.element);
+  track.setWebAudioPlugins([]);
+  audio.mono.disconnect();
+  audio.element.remove();
   t.audioTracks.delete(track);
 }
 
 function clearTileAudio(t) {
   for (const track of t.audioTracks.keys()) detachAudio(t, track);
-  t.sfxGain?.disconnect();
-  t.sfxGain = null;
-  t.audioGain?.disconnect();
-  t.audioGain = null;
 }
 
 // обновить ник на тайле (name пришёл/изменился после создания тайла)
@@ -386,43 +385,24 @@ function attachTrack(participant, track, publication) {
     t.videoEl = el;
   } else if (track.kind === Track.Kind.Audio) {
     if (t.audioTracks.has(track)) return;
-    playbackCtx = playbackCtx || new AudioContext();
-    if (!t.audioGain) {
-      t.audioGain = new GainNode(playbackCtx, {
-        gain: t.audioVol, channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers',
-      });
-      t.audioGain.connect(playbackCtx.destination);
-    }
-    const input = new MediaStreamAudioSourceNode(playbackCtx, {
-      mediaStream: new MediaStream([track.mediaStreamTrack]),
+    const mono = new GainNode(getAudioContext(), {
+      channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers',
     });
-    if (publication.trackName === 'sfx') {
-      if (!t.sfxGain) {
-        t.sfxGain = new GainNode(playbackCtx, { gain: sbVolume() });
-        t.sfxGain.connect(t.audioGain);
-      }
-      input.connect(t.sfxGain);
-    } else {
-      input.connect(t.audioGain);
-    }
-    t.audioTracks.set(track, input);
+    track.setAudioContext(getAudioContext());
+    track.setWebAudioPlugins([mono]);
+    const element = track.attach();
+    element.hidden = true;
+    document.body.appendChild(element);
+    element.play().catch(() => {});
+    t.audioTracks.set(track, { element, mono, soundboard: publication.trackName === 'sfx' });
     applyTileVolume(t);
-    // МИНИМАЛЬНАЯ задержка приёма: режем jitter buffer приёмника до ~0.
-    // Главный рычаг latency на стороне получателя (экономит 50-150ms).
-    try {
-      const receiver = track.receiver;
-      if (receiver && 'jitterBufferTarget' in receiver) {
-        receiver.jitterBufferTarget = 0;
-      }
-    } catch (_) {}
-    // подмешать в микс для записи (весь звук комнаты)
-    addToRecordMix(track.mediaStreamTrack);
+    recordingMix.addTrack(track.mediaStreamTrack);
   }
 }
 
 function detachTrack(track, participant) {
-  detachAudio(tiles.get(participant.sid), track);
-  track.detach().forEach((el) => el.remove());
+  if (track.kind === Track.Kind.Audio) detachAudio(tiles.get(participant.sid), track);
+  else track.detach().forEach((el) => el.remove());
 }
 
 // палата из URL-пути: /<palata> (как jitsi meet.jit.si/room). '' если корень.
@@ -460,12 +440,15 @@ async function join(roomName = palataFromPath()) {
   joinButtons.forEach((button) => { button.disabled = true; });
 
   try {
+    enableAudio();
     const { token } = await mintToken(roomName, name);
 
     room = new Room({
       adaptiveStream: true,
       dynacast: true,
       disconnectOnPageLeave: true,
+      singlePeerConnection: false,
+      webAudioMix: { audioContext: getAudioContext() },
       // МАКСИМАЛЬНАЯ устойчивость реконнекта (качество побоку).
       // Короткие частые попытки, много попыток — коннект держится до последнего.
       reconnectPolicy: {
@@ -478,12 +461,8 @@ async function join(roomName = palataFromPath()) {
         // видео на минимум — лишь бы пролезло в любой канал. Качество не важно.
         videoEncoding: { maxBitrate: 150000, maxFramerate: 15 },
         videoCodec: 'vp8',
-        // Аудио: минимальная задержка. ptime=10ms (вместо 20) → меньше пакетизационной
-        // задержки на кодере. Низкий битрейт (качество побоку).
-        dtx: false,
-        red: false,
         forceStereo: false,
-        audioPreset: { maxBitrate: 24000, ptime: 10 },
+        audioPreset: { maxBitrate: 24000 },
       },
     });
 
@@ -533,10 +512,13 @@ async function join(roomName = palataFromPath()) {
 }
 
 function wireRoomEvents(r) {
-  r.on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
+  const on = (event, handler) => r.on(event, (...args) => {
+    if (room === r && !leavingPage) handler(...args);
+  });
+  on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
     attachTrack(participant, track, pub);
   });
-  r.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
+  on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
     detachTrack(track, participant);
     // видео ушло (unsubscribe) — без этого тайл оставался чёрным
     if (track.kind === Track.Kind.Video) {
@@ -548,27 +530,27 @@ function wireRoomEvents(r) {
   });
   // События mute/unmute приходят и для своего, и для чужих устройств.
   for (const [event, show] of [[RoomEvent.TrackMuted, false], [RoomEvent.TrackUnmuted, true]]) {
-    r.on(event, (pub, participant) => {
+    on(event, (pub, participant) => {
       if (pub.kind === Track.Kind.Video) setTileVideo(participant, show);
       if (participant === r.localParticipant) syncMediaButtons();
     });
   }
-  r.on(RoomEvent.ParticipantConnected, (p) => {
+  on(RoomEvent.ParticipantConnected, (p) => {
     ensureTile(p);
     recomputeAvatars(); // роутинг без повторов: пересчитать назначение у всех
     // звук приветствия: кто-то вошёл. НЕ играем, когда заходит Telegram-мост
     // (tgbridge) — это служебный участник, а не живой пациент.
     if (p.identity !== 'tgbridge') playWelcome();
   });
-  r.on(RoomEvent.ParticipantDisconnected, (p) => {
+  on(RoomEvent.ParticipantDisconnected, (p) => {
     removeTile(p);
     recomputeAvatars();
     if (p.identity !== 'tgbridge') playFarewell(); // звук прощания (не на служебный мост)
   });
-  r.on(RoomEvent.ParticipantNameChanged, (_name, p) => updateTileLabel(p));
+  on(RoomEvent.ParticipantNameChanged, (_name, p) => updateTileLabel(p));
   // данные от других клиентов: сейчас — только «ломаемся» (minecraft-анимация
   // кикнутого тайла у всех зрителей синхронно)
-  r.on(RoomEvent.DataReceived, (payload) => {
+  on(RoomEvent.DataReceived, (payload) => {
     try {
       const msg = JSON.parse(new TextDecoder().decode(payload));
       if (msg && msg.t === 'broke' && msg.sid) breakTile(msg.sid);
@@ -579,7 +561,7 @@ function wireRoomEvents(r) {
       }
     } catch (_) {}
   });
-  r.on(RoomEvent.LocalTrackPublished, (pub) => {
+  on(RoomEvent.LocalTrackPublished, (pub) => {
     if (pub.track && pub.track.kind === Track.Kind.Video) {
       attachLocalVideo(pub.track);
     }
@@ -589,20 +571,25 @@ function wireRoomEvents(r) {
         const deviceId = pub.track.mediaStreamTrack.getSettings().deviceId;
         if (deviceId) localStorage.setItem('meetlerMicDevice', deviceId);
       }
-      addToRecordMix(pub.track.mediaStreamTrack);
     }
+    if (pub.kind === Track.Kind.Audio && pub.track) recordingMix.addTrack(pub.track.mediaStreamTrack);
     syncMediaButtons();
   });
   // стоп-шеринг / выключение своей камеры: видео снято — вернуть аватарку
-  r.on(RoomEvent.LocalTrackUnpublished, (pub) => {
+  on(RoomEvent.LocalTrackUnpublished, (pub) => {
     if (pub.kind === Track.Kind.Video) removeLocalVideo();
+    if (pub.kind === Track.Kind.Audio && pub.track) recordingMix.removeTrack(pub.track.mediaStreamTrack);
     syncMediaButtons();
   });
-  r.on(RoomEvent.Disconnected, (reason) => {
-    if (leavingPage) return;
-    // смена палаты (switchRoom): как только комната сменилась, поздние
-    // события СТАРОЙ комнаты не должны трогать UI новой
-    if (room !== r) return;
+  on(RoomEvent.Reconnected, () => {
+    enableAudio();
+    for (const participant of r.remoteParticipants.values()) {
+      for (const pub of participant.trackPublications.values()) {
+        if (pub.kind === Track.Kind.Audio && pub.track) attachTrack(participant, pub.track, pub);
+      }
+    }
+  });
+  on(RoomEvent.Disconnected, (reason) => {
     // личный кик (RemoveParticipant) → страница "тюрьма" с плохой концовкой
     if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
       goToJail();
@@ -626,7 +613,7 @@ function wireRoomEvents(r) {
   });
   // Зелёная подсветка говорящих. ActiveSpeakersChanged даёт актуальный список
   // активных спикеров (включая локального участника).
-  r.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+  on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
     const speakingSids = new Set(speakers.map((p) => p.sid));
     const localSpeaking = r.localParticipant && speakingSids.has(r.localParticipant.sid);
 
@@ -784,20 +771,16 @@ $('name').addEventListener('input', () => {
   $('callName').value = $('name').value;
 })();
 
-async function enableAudio() {
-  const activeRoom = room;
-  if (!activeRoom) return;
-  for (const ctx of [playbackCtx, recCtx, sfxCtx]) {
-    if (ctx?.state === 'suspended') ctx.resume().catch(() => {});
-  }
-  try { await activeRoom.startAudio(); } catch (_) {}
+function enableAudio() {
+  resumeAudio();
+  room?.startAudio().catch(() => {});
 }
-document.addEventListener('click', () => {
-  if (room && (!room.canPlaybackAudio || playbackCtx?.state === 'suspended'
-      || recCtx?.state === 'suspended' || sfxCtx?.state === 'suspended')) {
-    return enableAudio();
-  }
-}, { capture: true });
+for (const event of ['pointerdown', 'keydown', 'click']) {
+  document.addEventListener(event, enableAudio, { capture: true });
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && room) enableAudio();
+});
 
 function syncMediaButtons() {
   const participant = room?.localParticipant;
@@ -812,19 +795,23 @@ async function toggleDevice(buttonId, toggle) {
   const activeRoom = room;
   button.disabled = true;
   try {
-    await toggle(activeRoom.localParticipant);
+    const pub = await toggle(activeRoom.localParticipant);
+    if (room !== activeRoom) pub?.track?.stop();
+    else enableAudio();
   } catch (e) {
-    $('err').textContent = 'Не удалось переключить устройство: ' + e.message;
+    if (room === activeRoom) $('err').textContent = 'Не удалось переключить устройство: ' + e.message;
   } finally {
-    button.disabled = false;
-    syncMediaButtons();
+    if (room === activeRoom) {
+      button.disabled = false;
+      syncMediaButtons();
+    }
   }
 }
 function microphoneOptions() {
   const deviceId = localStorage.getItem('meetlerMicDevice');
   return {
     echoCancellation: true, noiseSuppression: false, autoGainControl: false,
-    // Захватываем оба канала; при публикации кодер смешивает их в mono.
+    // Захватываем оба канала; на приёме смешиваем L+R в mono.
     channelCount: { ideal: 2 },
     deviceId: deviceId ? { ideal: deviceId } : undefined,
   };
@@ -877,17 +864,16 @@ async function stopShare() {
   }
 }
 // --- Soundboard: проиграть звук по URL для ВСЕХ в палате (как ГОЙДА) ---
-let sfxCtx = null;
 const sfxCache = new Map();   // url -> decoded AudioBuffer
 let activeSfx = null;
 let sfxMonitorGain = null;    // активный gain локального монитора (для live-ползунка)
 
 async function loadBuffer(url) {
   if (sfxCache.has(url)) return sfxCache.get(url);
-  sfxCtx = sfxCtx || new AudioContext();
+  const ctx = getAudioContext();
   const res = await fetch(url);
   if (!res.ok) throw new Error('fetch ' + res.status);
-  const buf = await sfxCtx.decodeAudioData(await res.arrayBuffer());
+  const buf = await ctx.decodeAudioData(await res.arrayBuffer());
   sfxCache.set(url, buf);
   return buf;
 }
@@ -969,13 +955,20 @@ async function triggerMine(s) {
 async function playUrlToRoom(url, btnEl, burstId) {
   if (!room || activeSfx) return;
   const activeRoom = room;
-  let pub = null, track = null, src = null, monitor = null;
+  const ctx = getAudioContext();
+  resumeAudio();
+  let pub = null, track = null, src = null, monitor = null, roomGain = null, dest = null;
   const playback = {
     id: burstId, button: btnEl, stopped: false,
     stop() {
+      if (playback.stopped) return;
       playback.stopped = true;
       try { src?.stop(); } catch (_) {}
       playback.button?.classList.remove('playing');
+      if (activeSfx === playback) {
+        activeSfx = null;
+        sfxMonitorGain = null;
+      }
     },
   };
   activeSfx = playback;
@@ -983,26 +976,23 @@ async function playUrlToRoom(url, btnEl, burstId) {
   try {
     const buffer = await loadBuffer(url);
     if (playback.stopped) return;
-    if (sfxCtx.state === 'suspended') await sfxCtx.resume();
-    if (playback.stopped) return;
-
-    src = sfxCtx.createBufferSource();
+    src = ctx.createBufferSource();
     src.buffer = buffer;
-    const dest = new MediaStreamAudioDestinationNode(sfxCtx, { channelCount: 1 });
+    dest = new MediaStreamAudioDestinationNode(ctx, { channelCount: 1 });
     // громкость В ПАЛАТУ масштабируется бёрстом (спам кликов → громче всем)
-    const roomGain = sfxCtx.createGain();
+    roomGain = ctx.createGain();
     roomGain.gain.value = burstId ? gainForBurst(burstId) : 1;
     // Смешиваем L+R в mono до публикации.
     src.connect(roomGain);
     roomGain.connect(dest);          // в палату (через бёрст-усиление)
-    monitor = sfxCtx.createGain();
+    monitor = ctx.createGain();
     monitor.gain.value = sbVolume(); // индивидуальная громкость (у себя)
     sfxMonitorGain = monitor;        // чтобы ползунок менял её НА ЛЕТУ
     src.connect(monitor);
-    monitor.connect(sfxCtx.destination); // себе в колонки
+    monitor.connect(ctx.destination); // себе в колонки
 
     const mst = dest.stream.getAudioTracks()[0];
-    addToRecordMix(mst);             // попадает в запись 15с
+    recordingMix.addTrack(mst);      // попадает в запись 15с
     track = new LocalAudioTrack(mst);
     pub = await activeRoom.localParticipant.publishTrack(track, {
       name: 'sfx', source: Track.Source.Unknown,
@@ -1020,12 +1010,13 @@ async function playUrlToRoom(url, btnEl, burstId) {
     if (!playback.stopped) $('err').textContent = 'Звук не удался: ' + (e.message || e);
   } finally {
     playback.stop();
+    if (track) recordingMix.removeTrack(track.mediaStreamTrack);
     try { if (pub) await activeRoom.localParticipant.unpublishTrack(track); } catch (_) {}
     track?.stop();
     src?.disconnect();
     monitor?.disconnect();
-    sfxMonitorGain = null;
-    activeSfx = null;
+    roomGain?.disconnect();
+    dest?.disconnect();
   }
 }
 
@@ -1047,9 +1038,7 @@ function sbVolume() {
     localStorage.setItem('sbVolume', String(v));
     // Применить сразу к своему монитору и входящим звукам аптечки.
     if (sfxMonitorGain) sfxMonitorGain.gain.value = v;
-    for (const t of tiles.values()) {
-      if (t.sfxGain) t.sfxGain.gain.value = v;
-    }
+    for (const t of tiles.values()) applyTileVolume(t);
   });
 })();
 
@@ -1265,7 +1254,6 @@ async function switchRoom(newRoom, rejoin = false) {
     microphoneTrack = mic;
     try {
       await old.localParticipant.unpublishTrack(mic, false);
-      await mic.setAudioContext(undefined);
     } catch (_) {}
   }
   try { await old.disconnect(); } catch (_) {}
@@ -1757,15 +1745,11 @@ document.addEventListener('keydown', (e) => {
 // (webm нельзя обрезать по времени на клиенте — заголовок только в первом чанке).
 // На выходе .wav (мгновенно, без энкодера, корректная обрезка по сэмплам).
 const REC_WINDOW_SEC = 15;
-let recCtx = null;
-let recNode = null;                 // AudioWorkletNode (rec-tap)
-let recMixGain = null;              // сюда сходятся все источники
 let recRing = null;                 // Float32Array кольцевой буфер
 let recRingSize = 0;
 let recWritePos = 0;
 let recFilled = 0;
 let recSampleRate = 48000;
-let recConnected = new WeakSet();
 
 // ringWrite: очередной блок моно-сэмплов в кольцевой буфер (вызов из worklet).
 function ringWrite(inBuf) {
@@ -1777,57 +1761,17 @@ function ringWrite(inBuf) {
   }
 }
 
-// initRecordMix: WebAudio-граф записи 15с. Модуль AudioWorklet инлайном (Blob URL): web/
-// остаётся одним файлом без отдельной поставки. Асинхронная инициализация:
-// recMixGain создан синхронно, addToRecordMix можно звать сразу — данные
-// пойдут, как только воркет подключится (десятки мс на старте).
 function initRecordMix() {
-  if (recCtx) return;
-  recCtx = new AudioContext();
-  recSampleRate = recCtx.sampleRate;
+  if (recRing) return;
+  recSampleRate = recordingMix.start();
   recRingSize = Math.ceil(recSampleRate * REC_WINDOW_SEC);
   recRing = new Float32Array(recRingSize);
   recWritePos = 0; recFilled = 0;
 
-  recMixGain = recCtx.createGain();
-  // Для WAV-записи весь микс — моно: (L+R)/2 на входе.
-  recMixGain.channelCount = 1;
-  recMixGain.channelCountMode = 'explicit';
-
-  const workletSrc = `
-    class RecTap extends AudioWorkletProcessor {
-      process(inputs) {
-        const ch = inputs[0] && inputs[0][0];
-        if (ch) this.port.postMessage(ch); // postMessage клонирует немедленно
-        return true;
-      }
+  for (const participant of [room.localParticipant, ...room.remoteParticipants.values()]) {
+    for (const pub of participant.audioTrackPublications.values()) {
+      if (pub.track) recordingMix.addTrack(pub.track.mediaStreamTrack);
     }
-    registerProcessor('rec-tap', RecTap);
-  `;
-  const url = URL.createObjectURL(new Blob([workletSrc], { type: 'text/javascript' }));
-  recCtx.audioWorklet.addModule(url).then(() => {
-    URL.revokeObjectURL(url);
-    recNode = new AudioWorkletNode(recCtx, 'rec-tap', { outputChannelCount: [1] });
-    recNode.port.onmessage = (e) => ringWrite(e.data);
-    recMixGain.connect(recNode);
-    // Worklet с выходом требует подключения к destination, иначе может не
-    // тикать. Через нулевой gain — без двойного воспроизведения/эха.
-    const mute = recCtx.createGain();
-    mute.gain.value = 0;
-    recNode.connect(mute);
-    mute.connect(recCtx.destination);
-  }).catch((e) => console.warn('record mix init failed:', e));
-}
-
-// подмешать произвольный MediaStreamTrack (mic/remote/goida) в микс записи
-function addToRecordMix(mst) {
-  if (!mst || !recCtx || recConnected.has(mst)) return;
-  try {
-    const src = recCtx.createMediaStreamSource(new MediaStream([mst]));
-    src.connect(recMixGain);
-    recConnected.add(mst);
-  } catch (e) {
-    console.warn('addToRecordMix failed:', e);
   }
 }
 
@@ -1857,7 +1801,7 @@ function encodeWav(samples, sampleRate) {
 
 // собрать линейный хвост (последние recFilled сэмплов) из кольцевого буфера
 function collectRecTail() {
-  if (!recCtx || recFilled === 0) return null;
+  if (!recRing || recFilled === 0) return null;
   const out = new Float32Array(recFilled);
   const start = (recWritePos - recFilled + recRingSize) % recRingSize;
   for (let i = 0; i < recFilled; i++) out[i] = recRing[(start + i) % recRingSize];
@@ -1924,20 +1868,16 @@ function cleanup() {
   poker.disconnect();
   activeSfx?.stop();
   refreshCueControls();
-  // отключить сообщения воркета до сброса буфера записи
-  if (recNode) recNode.port.onmessage = null;
-  try { if (recNode) recNode.disconnect(); } catch (_) {}
-  try { if (recCtx) recCtx.close(); } catch (_) {}
-  recCtx = null; recNode = null; recMixGain = null; recRing = null;
-  recConnected = new WeakSet();
-  recWritePos = 0; recFilled = 0;
+  recordingMix.stop();
+  recRing = null;
+  recWritePos = 0; recFilled = 0; recRingSize = 0;
   tiles.forEach((t) => { clearTileAudio(t); t.el.remove(); });
   tiles.clear();
-  if (playbackCtx) playbackCtx.close().catch(() => {});
-  playbackCtx = null;
   if (localTile) { localTile.remove(); localTile = null; }
   document.body.classList.remove('tile-maximized'); // сбросить разворот
   screenTracks = []; // сброс состояния демонстрации
+  $('micBtn').disabled = false;
+  $('camBtn').disabled = false;
   syncMediaButtons();
   if (avatarsTimer) { clearInterval(avatarsTimer); avatarsTimer = null; }
   if (wnavTimer) { clearInterval(wnavTimer); wnavTimer = null; }
