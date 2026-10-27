@@ -26,6 +26,8 @@ tags:
     description: Forward room recordings to linked Telegram chats
   - name: Poker
     description: Six seats, 1000 virtual chips, 5/10 blinds. Tables reset on API restart.
+  - name: YouTube
+    description: Shared room playback. Resets on API restart.
 paths:
   /healthz:
     get:
@@ -505,6 +507,122 @@ paths:
           $ref: '#/components/responses/ProtectedRoom'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    get:
+      operationId: getYouTubePlayback
+      tags: [YouTube]
+      summary: Get shared playback
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/video:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    put:
+      operationId: setYouTubeVideo
+      tags: [YouTube]
+      summary: Start a video for the room
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [videoId]
+              properties:
+                videoId:
+                  type: string
+                  pattern: '^[a-zA-Z0-9_-]{11}$'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: removeYouTubeVideo
+      tags: [YouTube]
+      summary: Remove the room's video
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/play:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    post:
+      operationId: playYouTubeVideo
+      tags: [YouTube]
+      summary: Play from a position
+      requestBody:
+        $ref: '#/components/requestBodies/YouTubePosition'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No video selected.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/pause:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    post:
+      operationId: pauseYouTubeVideo
+      tags: [YouTube]
+      summary: Pause at a position
+      requestBody:
+        $ref: '#/components/requestBodies/YouTubePosition'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No video selected.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/seek:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    post:
+      operationId: seekYouTubeVideo
+      tags: [YouTube]
+      summary: Seek without changing play/pause state
+      requestBody:
+        $ref: '#/components/requestBodies/YouTubePosition'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No video selected.
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /api/rooms/{room}/poker:
     parameters:
       - $ref: '#/components/parameters/Room'
@@ -877,6 +995,18 @@ components:
         type: string
         example: 'Sun, 25 Oct 2026 12:00:00 GMT'
   requestBodies:
+    YouTubePosition:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [position]
+            properties:
+              position:
+                type: number
+                minimum: 0
+                description: Seconds from the start of the video.
     FileUpload:
       required: true
       content:
@@ -889,6 +1019,22 @@ components:
                 type: string
                 format: binary
   schemas:
+    YouTubePlayback:
+      type: object
+      required: [videoId, playing, position, revision]
+      properties:
+        videoId:
+          type: string
+          description: Empty when no video is selected.
+        playing:
+          type: boolean
+        position:
+          type: number
+          minimum: 0
+          description: Playback position in seconds at the time of the response.
+        revision:
+          type: integer
+          format: int64
     PokerPlayerKey:
       type: string
       minLength: 16
@@ -1121,6 +1267,12 @@ components:
         type: string
         example: bytes 0-1023/2048
   responses:
+    YouTubePlayback:
+      description: Current shared playback.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/YouTubePlayback'
     PokerConflict:
       description: Seat unavailable, wrong turn, or illegal move.
       content:

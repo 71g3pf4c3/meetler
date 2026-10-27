@@ -33,6 +33,7 @@ type roomService struct {
 	av          *avatarStore
 	votes       *voteStore
 	poker       *pokerStore
+	youtube     *youtubeStore
 	tgbridgeURL string // база tgbridge HTTP (для "15с → TG"); "" = мост не настроен
 	ok          bool   // БД открыта; иначе /api/rooms* → 503 (токены и кик работают)
 	protected   map[string]bool
@@ -92,6 +93,7 @@ func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL, protectedCSV st
 	rs.ok = true
 	rs.votes = newVoteStore(rs)
 	rs.poker = newPokerStore(client)
+	rs.youtube = newYouTubeStore()
 	return rs
 }
 
@@ -234,6 +236,9 @@ func (rs *roomService) deleteRoom(w http.ResponseWriter, _ *http.Request, room s
 // палаты сносится из БД + каталог старого файлового хранилища (если остался
 // после миграции). Переиспользуется голосованием.
 func (rs *roomService) closeRoom(room string) {
+	if rs.youtube != nil {
+		rs.youtube.clearRoom(room)
+	}
 	if rs.poker != nil {
 		rs.poker.clearRoom(room)
 	}
@@ -294,6 +299,8 @@ func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) 
 		rs.handleTGVoice(w, r, room, parts[2:])
 	case "poker":
 		rs.poker.routes.ServeHTTP(w, r)
+	case "youtube":
+		rs.youtube.routes.ServeHTTP(w, r)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}

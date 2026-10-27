@@ -9,6 +9,7 @@ import {
   getBrowser,
 } from '/vendor/livekit-client.esm.mjs';
 import { createPokerTable } from '/poker.js';
+import { createYouTubePlayer } from '/youtube.js';
 import { getAudioContext, resumeAudio, createRecorder } from '/audio.js';
 
 const $ = (id) => document.getElementById(id);
@@ -16,9 +17,10 @@ const page = document.documentElement;
 const grid = $('grid');
 const tiles = new Map(); // participant.sid -> { el, videoEl }
 const roomTimers = [];
-const callPanels = document.querySelectorAll('#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues, #poker');
+const callPanels = document.querySelectorAll('#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues, #poker, #youtube');
 const joinButtons = document.querySelectorAll('#createBtn, #renameBtn');
 const poker = createPokerTable(goToJail);
+const youtube = createYouTubePlayer();
 
 let room = null;
 let microphoneTrack = null;
@@ -29,7 +31,7 @@ let leavingPage = false;
 for (const event of ['beforeunload', 'pagehide']) {
   window.addEventListener(event, () => {
     leavingPage = true;
-    if (event === 'pagehide') poker.disconnect();
+    if (event === 'pagehide') { poker.disconnect(); youtube.disconnect(); }
   }, { capture: true });
 }
 window.addEventListener('pageshow', () => { leavingPage = false; });
@@ -64,6 +66,7 @@ function forgetCall() {
 function goToJail() {
   leavingPage = true;
   poker.disconnect();
+  youtube.disconnect();
   forgetCall();
   room?.disconnect();
   location.href = '/jail.html';
@@ -463,6 +466,7 @@ async function join(roomName = palataFromPath()) {
     syncMediaButtons();
     setCallState('connected');
     poker.connect(roomName, name, room.localParticipant.identity);
+    youtube.connect(roomName);
     refreshCueControls();
     for (const [refresh, interval] of [
       [refreshSoundboard, 20000], [refreshAvatars, 30000],
@@ -1129,6 +1133,7 @@ async function refreshWardNav() {
 async function switchRoom(newRoom, rejoin = false) {
   if (!room || joining || switching || $('micBtn').disabled || (!rejoin && newRoom === room.name)) return;
   poker.disconnect();
+  youtube.disconnect();
   switching = true;             // cleanup не будет прятать stage (без мигания)
   setCallState('restoring');
   selfLeaving = true;
@@ -1667,6 +1672,7 @@ let selfLeaving = false;
 let switching = false; // смена палаты: cleanup не прячет stage (без мигания)
 function leaveCall() {
   poker.disconnect();
+  youtube.disconnect();
   forgetCall();
   setCallState();
   selfLeaving = true;
@@ -1679,6 +1685,7 @@ $('restoreRetryBtn').onclick = () => checkAccess();
 
 function cleanup() {
   poker.disconnect();
+  youtube.disconnect();
   activeSfx?.stop();
   refreshCueControls();
   recording?.stop();

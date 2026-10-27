@@ -334,7 +334,19 @@
     }
     #callStatus[hidden] { display: none; }
     #callStatusText { flex: 1; }
-    html[data-call-state="restoring"] :is(#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues) { pointer-events: none; }
+    html[data-call-state="restoring"] :is(#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues, #poker, #youtube) { pointer-events: none; }
+    #youtubeForm, .youtube-controls { display: flex; align-items: center; gap: 0; }
+    #youtubeURL { flex: 1; min-width: 0; }
+    #youtubeSubmit { align-self: stretch; }
+    #youtubeFrame { position: relative; aspect-ratio: 16 / 9; min-height: 200px; background: #000; margin-top: 8px; }
+    #youtubeFrame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    .youtube-controls { gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    #youtubeSeek { flex: 1; min-width: 70px; width: 0; }
+    #youtubeTime { font: 11px "Courier New", monospace; white-space: nowrap; }
+    .youtube-volume { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+    #youtubeVolume { width: 70px; }
+    #youtubeErr { color: var(--error-text); }
+    #youtubeErr:not(:empty) { margin-top: 6px; }
     #wardNav {
       width: 148px; flex-shrink: 0; background: #fff;
       border: 1px solid #a0a0a0;
@@ -762,6 +774,33 @@
             </div>
             <input type="file" id="sbFile" hidden accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
             <div id="sbErr"></div>
+          </div>
+        </details>
+
+        <details class="post" id="youtube" open>
+          <summary>YouTube</summary>
+          <div class="body">
+            <form id="youtubeForm">
+              <input id="youtubeURL" class="f" placeholder="Ссылка на YouTube" aria-label="Ссылка на видео YouTube" autocomplete="off" required />
+              <button id="youtubeSubmit" class="primary" type="submit">Смотреть</button>
+            </form>
+            <div id="youtubeViewer" hidden>
+              <div id="youtubeFrame"></div>
+              <div class="youtube-controls">
+                <button id="youtubePlay" class="media-toggle" type="button" aria-pressed="false">Смотреть</button>
+                <input id="youtubeSeek" type="range" min="0" max="1" value="0" step="1" aria-label="Позиция видео" />
+                <span id="youtubeTime">0:00 / 0:00</span>
+                <label class="youtube-volume" for="youtubeVolume" title="Громкость у себя">
+                  <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M11 5 6 9H3v6h3l5 4V5Z" fill="currentColor" />
+                    <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" fill="none" stroke="currentColor" stroke-width="2" />
+                  </svg>
+                  <input id="youtubeVolume" type="range" min="0" max="100" value="100" aria-label="Громкость YouTube у себя" />
+                </label>
+                <button id="youtubeRemove" class="danger" type="button">Убрать</button>
+              </div>
+            </div>
+            <div id="youtubeErr" role="alert"></div>
           </div>
         </details>
 
