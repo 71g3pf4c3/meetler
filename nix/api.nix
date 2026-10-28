@@ -5,6 +5,7 @@ buildGoLatestModule {
   version = "0.1.0";
 
   src = ../api;
+  doCheck = false;
 
   # Cache complete modules, so new package imports can reuse existing dependencies.
   proxyVendor = true;

@@ -4,6 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>meetler :: палата №6</title>
+  <script>
+    try {
+      const room = decodeURIComponent(location.pathname.replace(/^\/+|\/+$/g, ''));
+      if (/^[a-zA-Z0-9_-]{1,64}$/.test(room)) {
+        document.documentElement.dataset.room = room;
+        document.title = `meetler :: палата ${room}`;
+        document.documentElement.dataset.callState = 'restoring';
+      }
+    } catch (_) {}
+  </script>
   <link rel="icon" type="image/png" href="/logo.png" />
   <!-- preload: тянем тяжёлый livekit-client параллельно с парсингом HTML -->
   <link rel="modulepreload" href="/vendor/livekit-client.esm.mjs" />
@@ -12,6 +22,23 @@
     /* UI в стиле старых форумов (rutracker / 4chan): таблицы, Verdana, бежевый фон. */
     * { box-sizing: border-box; }
     body {
+      --red: #800000;
+      --red-dark: #600000;
+      --red-light: #ffd9d9;
+      --error-text: var(--red);
+      --control-bg: #ece9d8;
+      --control-hover: #d7c9a7;
+      --control-text: #000;
+      --control-border: #8a8a8a;
+      --control-light: #fff;
+      --control-focus: var(--red);
+      --danger-bg: var(--red);
+      --danger-hover: var(--red-dark);
+      --danger-text: #fff;
+      --primary-bg: #d7e6c9;
+      --primary-text: #000;
+      --selected-bg: var(--red-light);
+      --selected-text: var(--red);
       margin: 0; padding: 0;
       font-family: Verdana, Arial, Tahoma, sans-serif; font-size: 12px;
       background: #e8e8e8; color: #000;
@@ -20,20 +47,19 @@
 
     /* шапка форума — клик ведёт в приёмное отделение (в корень) */
     #masthead {
-      background: #0f5b8a;
-      background: linear-gradient(#1a6ea3, #0f5b8a);
-      color: #fff; padding: 6px 10px; border-bottom: 2px solid #073d5e;
+      background: var(--red);
+      color: #fff; padding: 6px 10px; border-bottom: 2px solid var(--red-dark);
       display: flex; align-items: center; gap: 10px;
       text-decoration: none; cursor: pointer;
     }
     #masthead:visited, #masthead:active { color: #fff; }
     #masthead img.logoimg {
       height: 44px; width: 44px; object-fit: contain;
-      border: 1px solid #073d5e; background: #fff; border-radius: 3px;
+      border: 1px solid var(--red-dark); background: #fff; border-radius: 3px;
     }
     #masthead .logo { font-size: 20px; font-weight: bold; letter-spacing: 1px; }
     #masthead .logo b { color: #ffd34d; }
-    #masthead .slogan { font-size: 11px; color: #cfe6f5; }
+    #masthead .slogan { font-size: 11px; color: var(--red-light); }
 
     #wrap { max-width: 1000px; margin: 8px auto; padding: 0 8px; }
 
@@ -42,7 +68,8 @@
       background: #d7c9a7; border: 1px solid #b3a079; padding: 3px 8px;
       font-size: 11px; color: #4a3b1a; margin-bottom: 8px;
     }
-    .navbar b { color: #800000; }
+    .navbar b { color: var(--red); }
+    .navbar a { color: var(--red); font-weight: bold; text-decoration: none; }
 
     /* табличный блок как на форуме */
     table.forum {
@@ -50,8 +77,8 @@
       border: 1px solid #a0a0a0; margin-bottom: 10px;
     }
     table.forum th {
-      background: #800000; color: #fff; text-align: left;
-      padding: 4px 8px; font-size: 12px; border: 1px solid #600000;
+      background: var(--red); color: #fff; text-align: left;
+      padding: 4px 8px; font-size: 12px; border: 1px solid var(--red-dark);
     }
     table.forum td {
       padding: 6px 8px; border: 1px solid #c8c8c8; vertical-align: top;
@@ -64,119 +91,287 @@
       font-family: Verdana, Arial, sans-serif; font-size: 12px;
       padding: 3px 5px; border: 1px solid #7f9db9; background: #fff; width: 260px;
     }
+    #createForm { display: grid; gap: 8px; }
+    .join-field { display: grid; grid-template-columns: 110px minmax(0, 360px); align-items: center; gap: 8px; }
+    .join-controls { display: flex; align-items: stretch; gap: 6px; }
+    .join-field input.f { width: 100%; min-width: 0; }
+    .join-controls input { flex: 1; }
+    .join-controls button { flex-shrink: 0; white-space: nowrap; }
+    @media (max-width: 480px) {
+      .join-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    }
+
+    /* ползунки — квадратные ручки и вдавленная дорожка, как у кнопок */
+    input[type="range"] {
+      --range-track: #d7c9a7;
+      --range-edge: #7a5a32;
+      --range-thumb: #ece9d8;
+      --range-light: #fff;
+      --range-shadow: #8a8a8a;
+      --range-focus: var(--red);
+      -webkit-appearance: none; appearance: none;
+      height: 16px; padding: 0; border: none; border-radius: 0;
+      background: transparent; vertical-align: middle; cursor: pointer;
+    }
+    input[type="range"]:focus-visible {
+      outline: 2px solid var(--range-focus); outline-offset: 3px;
+    }
+    input[type="range"]::-webkit-slider-runnable-track {
+      box-sizing: border-box; height: 6px; border: 1px solid var(--range-edge);
+      border-radius: 0; background: var(--range-track);
+      box-shadow: inset 1px 1px 0 var(--range-shadow);
+    }
+    input[type="range"]::-moz-range-track {
+      box-sizing: border-box; height: 6px; border: 1px solid var(--range-edge);
+      border-radius: 0; background: var(--range-track);
+      box-shadow: inset 1px 1px 0 var(--range-shadow);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      box-sizing: border-box; width: 12px; height: 14px; margin-top: -5px;
+      border: 1px solid var(--range-shadow);
+      border-top-color: var(--range-light); border-left-color: var(--range-light);
+      border-radius: 0; background: var(--range-thumb);
+    }
+    input[type="range"]::-moz-range-thumb {
+      box-sizing: border-box; width: 12px; height: 14px;
+      border: 1px solid var(--range-shadow);
+      border-top-color: var(--range-light); border-left-color: var(--range-light);
+      border-radius: 0; background: var(--range-thumb);
+    }
+    input[type="range"]:active::-webkit-slider-thumb { background: var(--range-track); }
+    input[type="range"]:active::-moz-range-thumb { background: var(--range-track); }
 
     /* кнопки — "вдавленные", как в старых формах */
-    button {
+    button, .button {
       font-family: Verdana, Arial, sans-serif; font-size: 11px;
       padding: 3px 10px; cursor: pointer;
-      border: 1px solid #8a8a8a; border-top-color: #fff; border-left-color: #fff;
-      background: #ece9d8; color: #000;
+      border: 1px solid var(--button-border, var(--control-border)); border-radius: 0;
+      border-top-color: var(--button-light, var(--control-light));
+      border-left-color: var(--button-light, var(--control-light));
+      background: var(--button-bg, var(--control-bg)); color: var(--button-text, var(--control-text));
     }
-    button:active { border-color: #fff #8a8a8a #8a8a8a #fff; }
+    button:hover, .button:hover { background: var(--button-hover, var(--control-hover)); }
+    button:active, .button:active, button[aria-pressed="true"] {
+      border-color: var(--button-border, var(--control-border)) var(--button-light, var(--control-light))
+        var(--button-light, var(--control-light)) var(--button-border, var(--control-border));
+      box-shadow: inset 1px 1px 0 rgba(0,0,0,.2);
+    }
+    button:focus-visible, .button:focus-visible { outline: 2px solid var(--control-focus); outline-offset: 2px; }
     button:disabled { color: #999; cursor: default; }
-    button.primary { font-weight: bold; background: #d7e6c9; }
-    button.danger  { background: #e6c9c9; }
-    /* blink-анимация играющего звука (наследие ГОЙДА-кнопки) */
-    @keyframes goidaBlink {
-      50% { background: #ff6a00; color: #fff; }
+    button.primary { font-weight: bold; --button-bg: var(--primary-bg); --button-text: var(--primary-text); }
+    .media-toggle[aria-pressed="true"] {
+      --button-bg: var(--primary-bg); --button-hover: var(--primary-bg); --button-text: var(--primary-text);
     }
-
-    /* soundboard: кнопки в том же "гойда"-стиле */
-    button.sfx {
-      font-weight: bold; color: #800000; letter-spacing: 1px;
-      background: #ffe08a; border-color: #b8860b #7a5a08 #7a5a08 #b8860b;
+    .media-toggle[aria-busy="true"] { cursor: progress; }
+    .media-toggle[aria-busy="true"]::after { content: '…'; }
+    button.danger, .remove-button {
+      --button-bg: var(--danger-bg); --button-hover: var(--danger-hover); --button-text: var(--danger-text);
     }
-    button.sfx.playing { animation: goidaBlink .4s steps(1) infinite; }
-    #sbBtns { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
-    #sbBtns.empty { display: block; color: #777; font-size: 11px; }
-    #sbErr { color: #a00; font-size: 11px; min-height: 0; }
+    .remove-button[aria-pressed="true"] {
+      --button-bg: var(--danger-hover); --button-hover: var(--danger-hover);
+    }
+    .icon-button {
+      position: relative; display: inline-grid; place-items: center;
+      width: 20px; height: 20px; padding: 0;
+      font-family: "Courier New", monospace; font-size: 12px; line-height: 1;
+    }
+    .icon-button--small { width: 14px; height: 14px; font-size: 9px; }
+    .icon-button[hidden] { display: none; }
+    .like.liked { --button-bg: var(--selected-bg); --button-hover: var(--selected-bg); --button-text: var(--selected-text); }
+    /* играющий звук — вдавленная кнопка */
+    button.sfx.playing {
+      --button-bg: var(--control-hover); --button-hover: var(--control-hover);
+      border-color: var(--control-border) var(--control-light) var(--control-light) var(--control-border);
+      box-shadow: inset 1px 1px 0 rgba(0,0,0,.2);
+    }
+    #sbBtns { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 4px; }
+    #sbErr { color: var(--error-text); font-size: 11px; min-height: 0; }
     /* строка звука: кнопка + крестик удаления */
     .sfxrow { display: inline-flex; align-items: stretch; }
-    .sfxrow button.sfxdel {
-      padding: 0 4px; font-size: 11px; color: #800000;
-      background: #e6c9c9; border-color: #a00;
-    }
+    .sfxrow .remove-button { height: auto; }
     /* ползунок индивидуальной громкости (только у себя) */
-    #sbVolRow { font-size: 11px; color: #4a3b1a; margin-left: 12px; }
-    #sbVol { vertical-align: middle; width: 110px; }
+    #soundboard > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+    #sbVolRow {
+      display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+      font-size: 11px; font-weight: normal; color: var(--red-light); white-space: nowrap; cursor: default;
+    }
+    #sbVol { width: 110px; margin: 0; --range-focus: #ffd34d; }
+    #cueRows { display: grid; gap: 8px; }
+    .cue-row { display: grid; grid-template-columns: 48px repeat(3, 20px); align-items: center; gap: 4px; }
+    .cue-error { color: var(--error-text); font-size: 11px; margin-top: 4px; }
+    .cue-error:empty { display: none; }
+
+    #poker > .body { background: #1c1c1c; }
+    .poker-info, .poker-actions {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    }
+    .poker-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 6px; }
+    .poker-info { justify-content: flex-end; gap: 4px; margin-left: auto; min-width: 0; }
+    .poker-info .poker-stat { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+    .poker-table {
+      --poker-card-width: 34px;
+      --poker-card-height: 46px;
+      --poker-hand-width: calc(2 * var(--poker-card-width) + 4px);
+      --poker-felt: #176b42;
+      display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 6px;
+      background: var(--poker-felt);
+    }
+    .poker-players { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; width: 100%; max-width: 642px; justify-self: center; }
+    .poker-seat {
+      min-width: 0; width: 210px; max-width: 100%; min-height: 64px; padding: 4px;
+      border: 1px solid var(--control-border); background: var(--control-bg);
+      display: grid; align-content: center; gap: 3px; text-align: center;
+    }
+    .poker-seat.acting { background: #d7e6c9; color: #000; border-color: #176b42; }
+    .poker-seat.folded { opacity: .55; }
+    .poker-stat {
+      padding: 2px 4px;
+      border: 1px solid var(--control-border); background: var(--control-bg); color: var(--control-text);
+      border-top-color: var(--control-light); border-left-color: var(--control-light);
+      box-shadow: 1px 1px 0 rgba(0,0,0,.2);
+      font-size: 11px; line-height: 1.2; white-space: nowrap;
+    }
+    .poker-seat-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: bold; }
+    .poker-seat-info { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+    .poker-seat-stats { min-width: 0; }
+    .poker-seat-cards, .poker-cards { display: flex; justify-content: center; gap: 4px; }
+    .poker-board {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; padding: 12px 0;
+    }
+    .poker-board > .poker-cards { grid-column: 2; }
+    .poker-pot, #pokerSelfChips {
+      display: grid; place-items: center; justify-self: end; height: var(--poker-card-height);
+      width: var(--poker-card-width); max-width: none;
+      padding: 2px 1px; white-space: nowrap; overflow-wrap: normal; font-variant-numeric: tabular-nums;
+    }
+    .poker-board > .poker-pot { grid-column: 3; justify-self: start; }
+    #pokerSelfChips, #pokerActor { display: flex; align-items: center; justify-content: center; gap: 4px; }
+    .poker-card {
+      display: inline-grid; place-items: center; flex: 0 0 var(--poker-card-width);
+      width: var(--poker-card-width); height: var(--poker-card-height);
+      border: 1px solid var(--control-border); background: var(--control-bg);
+      border-top-color: var(--control-light); border-left-color: var(--control-light);
+      color: var(--control-text); font: bold 16px/1 "Courier New", monospace;
+    }
+    .poker-card.red { color: var(--error-text); }
+    .poker-card.empty { background: var(--poker-felt); border-color: var(--control-border); }
+    #poker [hidden] { display: none; }
+    .poker-self {
+      grid-column: 1 / -1; min-width: 0;
+      display: grid; grid-template-columns: minmax(0, 1fr) var(--poker-hand-width) minmax(0, 1fr); align-items: end; gap: 4px 6px;
+    }
+    #pokerSelfAction { grid-column: 2; grid-row: 1; text-align: center; white-space: normal; overflow-wrap: anywhere; }
+    #pokerSelfChips { grid-column: 1; grid-row: 2; }
+    #pokerHand { grid-column: 2; grid-row: 2; width: var(--poker-hand-width); justify-self: center; }
+    .poker-self-controls { grid-column: 3; grid-row: 2; display: flex; flex-wrap: wrap; align-items: end; gap: 6px; min-width: 0; }
+    @media (max-width: 600px) {
+      .poker-self-controls { grid-column: 1 / -1; grid-row: 3; justify-content: center; }
+    }
+    .poker-stat.chips, .poker-stat.check, .poker-stat.call, .poker-stat.profit { background: var(--primary-bg); color: var(--primary-text); }
+    .poker-stat.fold, .poker-stat.loss { background: var(--danger-bg); color: var(--danger-text); }
+    .poker-stat.bet, .poker-stat.raise { background: var(--selected-bg); color: var(--selected-text); }
+    .poker-actions { margin: 0; }
+    #pokerDeal { height: var(--poker-card-height); }
+    .poker-control-column { display: flex; flex-direction: column; gap: 0; height: var(--poker-card-height); }
+    .poker-control-column > * { flex: 1 1 0; min-height: 0; margin: 0; }
+    .poker-control-column > * + * { border-top-width: 0; }
+    .poker-bet { width: 88px; }
+    #pokerBet {
+      width: 100%; min-width: 0; padding: 2px 4px; border-radius: 0;
+      border: 1px solid var(--control-border);
+      border-right-color: var(--control-light); border-bottom-color: var(--control-light);
+      background: var(--control-bg); color: var(--control-text);
+      font: inherit; font-size: 11px; text-align: center;
+      box-shadow: inset 1px 1px 0 rgba(0,0,0,.2);
+      -moz-appearance: textfield; appearance: textfield;
+    }
+    #pokerBet:focus-visible { outline: 2px solid var(--control-focus); outline-offset: -2px; }
+    #pokerBet::-webkit-inner-spin-button, #pokerBet::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    #pokerErr { color: var(--error-text); margin-top: 4px; }
+    #pokerErr:empty { display: none; }
 
     /* приёмное отделение: картинка-баннер */
     .priem img { width: 100%; height: auto; display: block; }
 
     /* галерея портретов */
-    #avatars .cnt { color: #4a3b1a; font-size: 11px; }
-    #avatarErr { color: #a00; font-size: 11px; min-height: 0; }
-    #avatarThumbs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    #avatarErr { color: var(--error-text); font-size: 11px; min-height: 0; }
+    #avatarThumbs { display: flex; flex-wrap: wrap; gap: 5px; }
+    #avatarUploadBtn {
+      display: grid; place-items: center; flex-shrink: 0; width: 56px; height: 56px;
+      padding: 0; font: 32px/1 "Courier New", monospace;
+    }
     #avatarThumbs .thumb {
-      position: relative; width: 56px; height: 56px;
-      border: 1px solid #a0a0a0; background: #1a1a1a;
+      position: relative; flex-shrink: 0; width: 56px; height: 56px; padding: 0;
+      border: 1px solid var(--control-border);
+      border-top-color: var(--control-light); border-left-color: var(--control-light);
+      background: var(--control-bg);
     }
     #avatarThumbs .thumb img {
       width: 100%; height: 100%; object-fit: cover; display: block;
     }
-    /* раритетность портрета: рамка-градиент (чем реже выпадает — тем ярче).
-       common → legendary. Загруженный позже = реже = выше тир. */
-    #avatarThumbs .thumb { padding: 2px; background: #888; }
-    #avatarThumbs .thumb.rar0 { background: #9aa0a6; }                                   /* обычный — серый */
-    #avatarThumbs .thumb.rar1 { background: linear-gradient(135deg,#3fa34d,#8fd694); }    /* необычный — зелёный */
-    #avatarThumbs .thumb.rar2 { background: linear-gradient(135deg,#2f6fd0,#7fb0ff); }    /* редкий — синий */
-    #avatarThumbs .thumb.rar3 { background: linear-gradient(135deg,#8a2be2,#c98bff); }    /* эпический — фиолет */
-    #avatarThumbs .thumb.rar4 {                                                          /* легендарный — золото-радуга */
-      background: linear-gradient(135deg,#ff8a00,#ffd34d,#ff2d55,#8a2be2,#ffd34d);
-      background-size: 300% 300%; animation: rarShine 3s ease infinite;
-    }
-    @keyframes rarShine { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
-    #avatarThumbs .thumb button {
-      position: absolute; top: -1px; right: -1px;
-      padding: 0 3px; font-size: 11px; line-height: 14px;
-      background: #e6c9c9; border: 1px solid #a00; color: #800000;
-    }
+    #avatarThumbs .thumb .icon-button { position: absolute; top: 2px; right: 2px; }
     /* лайк: внизу тамбнейла, чем больше — тем реже выдаётся портрет */
     #avatarThumbs .thumb button.like {
-      top: auto; bottom: -1px; left: -1px; right: auto;
-      background: rgba(0,0,0,.72); border: 1px solid #a00; color: #ff8aa0;
-      font-size: 10px; padding: 0 3px;
+      top: auto; bottom: 2px; left: 2px; right: auto;
+      width: auto; min-width: 0; padding: 0 1px;
     }
-    #avatarThumbs .thumb button.like.liked { background: #a00; color: #fff; }
 
     /* список палат: ✕ закрывает палату (со всеми звуками/портретами) */
-    #roomsBody a { font-weight: bold; }
+    #roomsBody td.room-action { position: relative; padding: 0; }
+    #roomsBody .room-action button { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #roomsBody .roomdel[data-votes] { width: calc(100% - 26px); }
     #roomsBody td.muted { color: #777; }
-    #roomsBody .roomdel {
-      padding: 0 4px; font-size: 11px; line-height: 14px;
-      background: #e6c9c9; border: 1px solid #a00; color: #800000;
-    }
-    #roomsErr { color: #a00; font-size: 11px; min-height: 0; margin-top: 4px; }
+    #roomsErr { color: var(--error-text); font-size: 11px; min-height: 0; margin-top: 4px; }
 
-    /* конференция: слева вертикальное меню палат, справа сама палата.
-       display переключается из JS ('flex' когда в палате). */
+    /* Вид палаты определяется общим состоянием страницы. */
     #stage { display: none; gap: 8px; align-items: flex-start; }
+    html[data-call-state] #join { display: none; }
+    html[data-call-state] #stage { display: flex; }
+    #callStatus {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; padding: 8px;
+      border: 1px solid var(--control-border); background: var(--control-bg);
+    }
+    #callStatus[hidden] { display: none; }
+    #callStatusText { flex: 1; }
+    html[data-call-state="restoring"] :is(#bar, #wardNav, #grid, #soundboard, #avatars, #roomCues, #poker, #youtube) { pointer-events: none; }
+    #youtubeForm, .youtube-controls { display: flex; align-items: center; gap: 0; }
+    #youtubeURL { flex: 1; min-width: 0; }
+    #youtubeSubmit { align-self: stretch; }
+    #youtubeFrame { position: relative; aspect-ratio: 16 / 9; min-height: 200px; background: #000; margin-top: 8px; }
+    #youtubeFrame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    .youtube-controls { gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    #youtubeSeek { flex: 1; min-width: 70px; width: 0; }
+    #youtubeTime { font: 11px "Courier New", monospace; white-space: nowrap; }
+    .youtube-volume { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+    #youtubeVolume { width: 70px; }
+    #youtubeErr { color: var(--error-text); }
+    #youtubeErr:not(:empty) { margin-top: 6px; }
     #wardNav {
       width: 148px; flex-shrink: 0; background: #fff;
       border: 1px solid #a0a0a0;
     }
     #wardNav .wnav-head {
-      background: #800000; color: #fff; font-weight: bold;
-      padding: 3px 8px; font-size: 11px; border-bottom: 1px solid #600000;
+      background: var(--red); color: #fff; font-weight: bold;
+      padding: 3px 8px; font-size: 11px; border-bottom: 1px solid var(--red-dark);
     }
+    #renameForm { display: grid; }
+    #renameForm :is(input, button) { width: 100%; min-width: 0; }
     #wardNavList { max-height: 60vh; overflow-y: auto; }
     .wnav-item {
       display: flex; justify-content: space-between; gap: 4px;
       padding: 3px 8px; font-size: 11px; cursor: pointer;
-      border-bottom: 1px solid #eee; color: #0000cc;
+      border-bottom: 1px solid #eee;
     }
     .wnav-item:hover { background: #f0ead6; }
     .wnav-item.current {
-      background: #d7c9a7; font-weight: bold; color: #800000;
+      background: #d7c9a7; font-weight: bold; color: var(--red);
     }
     .wnav-item .cnt { color: #777; font-weight: normal; }
     .wnav-empty { padding: 4px 8px; font-size: 11px; color: #777; }
     #wardNav .wnav-new {
-      display: block; padding: 4px 8px; font-size: 11px;
-      border-top: 1px solid #a0a0a0; background: #f7f3ea;
-      text-decoration: none; color: #0000cc;
+      display: block; text-align: center; text-decoration: none;
     }
-    #wardNav .wnav-new:hover { background: #f0ead6; }
     #stageMain { flex: 1; min-width: 0; }
     /* на узких экранах меню палат уходит наверх горизонтальной лентой */
     @media (max-width: 700px) {
@@ -189,25 +384,12 @@
       background: #d7c9a7; border: 1px solid #b3a079; padding: 5px 8px;
       margin-bottom: 8px; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
     }
-    /* большая красная кнопка «тишина»: мут всех декоративных звуков
-       (soundboard/джинглы/TG-медиа/твари) — голоса людей остаются */
-    #quietBtn {
-      background: #cc2222; color: #fff; font-weight: bold; font-size: 14px;
-      padding: 8px 18px; border: 2px solid #7a0b0b; border-radius: 4px;
-      cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;
-      min-height: 40px;
-    }
-    #quietBtn:hover { background: #b01818; }
-    #quietBtn.on {
-      background: #7a0b0b; color: #ffcccc;
-      box-shadow: inset 0 0 8px rgba(0,0,0,0.5); border-color: #4a0000;
-    }
-    body.dark #quietBtn { border-color: #4a0000; }
     #stats { margin-left: auto; font-size: 11px; color: #4a3b1a; }
     body.dark #stats { color: #93a1a1; }
 
     #grid {
-      display: grid; gap: 6px;
+      display: grid; gap: 6px; margin-bottom: 10px;
+      min-height: 165px; align-content: start;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     }
     .tile {
@@ -217,7 +399,7 @@
     }
     /* говорящий — зелёная рамка как "онлайн" на форуме */
     .tile.speaking { border-color: #2e8b2e; box-shadow: 0 0 0 1px #2e8b2e inset; }
-    .tile video { width: 100%; height: 100%; object-fit: cover; }
+    .tile video { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; }
     .tile .label {
       position: absolute; left: 0; bottom: 0;
       padding: 1px 6px; font-size: 11px; color: #ffd34d;
@@ -231,30 +413,15 @@
        (absolute позиционируется выше статичного video, поэтому клики
        доходят до органов управления, а не уходят в видеопоток) */
     .tile .vol {
-      position: absolute; top: 4px; right: 36px; width: 64px; height: 14px;
+      position: absolute; top: 7px; right: 36px; width: 64px; height: 14px;
       margin: 0; padding: 0; z-index: 2; cursor: pointer;
     }
-    .tile .kick {
-      position: absolute; top: 4px; right: 4px; z-index: 2;
-      padding: 0 4px; font-size: 11px; line-height: 14px;
-      background: #e6c9c9; border: 1px solid #a00; color: #800000;
-    }
-    /* hard mute: заглушить участника у себя (под киком, правый угол) */
-    .tile .hmute {
-      position: absolute; top: 22px; right: 4px; z-index: 2;
-      padding: 0 4px; font-size: 11px; line-height: 14px;
-      background: #d9d9d9; border: 1px solid #666; color: #333;
-    }
-    .tile .hmute.on {
-      background: #8a8a8a; border-color: #444; color: #fff;
-    }
+    .tile .icon-button { position: absolute; top: 4px; z-index: 2; }
+    .tile .icon-button:focus-visible { outline-color: #ffd34d; }
+    .tile .kick { right: 4px; }
     /* клик по трансляции разворачивает её; явная кнопка — в левом верхнем углу */
     .tile { cursor: zoom-in; }
-    .tile .maxbtn {
-      position: absolute; top: 4px; left: 4px; z-index: 2;
-      padding: 0 4px; font-size: 12px; line-height: 14px;
-      background: rgba(0,0,0,.6); border: 1px solid #888; color: #ffd34d;
-    }
+    .tile .maxbtn { left: 4px; }
     /* развёрнутый на всё окно тайл */
     .tile.max {
       position: fixed; inset: 0; width: 100vw; height: 100vh;
@@ -264,13 +431,14 @@
     .tile.max video { object-fit: contain; }
     .tile.max .ph { background-size: contain; background-color: #000; }
     body.tile-maximized { overflow: hidden; }
-    /* плейсхолдер при выключенной камере — дефолтная аватарка */
+    /* Портрет остаётся под видео, пока первый кадр не готов. */
     .tile .ph {
-      width: 100%; height: 100%;
-      background: #1a1a1a url('/avatar.jpg') center/cover no-repeat;
+      position: absolute; inset: 0;
+      background: #1a1a1a center/cover no-repeat;
     }
 
-    #err { color: #a00; font-size: 11px; min-height: 14px; margin-top: 4px; }
+    #err { color: var(--error-text); font-size: 11px; margin-bottom: 8px; }
+    #err:empty { display: none; }
 
     /* подвал */
     #foot {
@@ -278,20 +446,24 @@
       font-size: 10px; color: #777; border-top: 1px solid #ccc; text-align: center;
     }
 
-    /* --- прогресс голосов за деструктив: 1 жёлтый, 2 оранжевый, 3 красный ---
-       плюс бейдж "N/3" из data-votes на кнопке-крестике */
-    .kick.v1, .sfxdel.v1, .roomdel.v1, #avatarThumbs .thumb button.v1 { background: #ffe08a !important; border-color: #b8860b !important; color: #6b5200 !important; }
-    .kick.v2, .sfxdel.v2, .roomdel.v2, #avatarThumbs .thumb button.v2 { background: #ffb36b !important; border-color: #c05a00 !important; color: #6b2e00 !important; }
-    .kick.v3, .sfxdel.v3, .roomdel.v3, #avatarThumbs .thumb button.v3 { background: #e23b3b !important; border-color: #900 !important; color: #fff !important; }
-    .kick[data-votes]::after, .sfxdel[data-votes]::after, .roomdel[data-votes]::after {
+    /* счётчик голосов продолжает рамку и цвет кнопки удаления */
+    .remove-button[data-votes]::after {
       content: attr(data-votes);
-      position: absolute; bottom: 100%; right: 0;
-      font-size: 9px; background: #000; color: #ffd34d; padding: 0 3px;
-      border-radius: 2px; white-space: nowrap; pointer-events: none;
+      position: absolute; top: calc(100% + 1px); left: -1px; z-index: 4;
+      box-sizing: border-box; width: calc(100% + 2px); padding: 0; text-align: center;
+      font: 9px/12px Arial, sans-serif;
+      background: var(--button-bg, var(--control-bg)); color: var(--button-text, var(--control-text));
+      border: 1px solid var(--button-border, var(--control-border)); border-top: none;
+      border-left-color: inherit;
+      white-space: nowrap; pointer-events: none;
     }
-    #roomsBody .roomdel { position: relative; }
-    .tile .kick { position: absolute; } /* already; ensure ::after anchors */
-    .sfxrow { position: relative; }
+    .remove-button:hover::after { background: var(--button-hover, var(--control-hover)); }
+    .remove-button.icon-button--small::after { font-size: 8px; line-height: 10px; }
+    .roomdel[data-votes]::after {
+      top: -1px; left: calc(100% + 1px); width: 26px; height: calc(100% + 2px);
+      display: grid; place-items: center;
+      border-top: 1px solid var(--control-light); border-left: none;
+    }
 
     /* --- minecraft block-break: трещины + разлёт тайла --- */
     .tile.breaking { animation: mcShake .12s steps(2) 6; }
@@ -321,40 +493,57 @@
     #themeToggle {
       position: fixed; top: 6px; right: 8px; z-index: 50;
       font-size: 11px; padding: 2px 8px; cursor: pointer;
-      background: #ece9d8; border: 1px solid #8a8a8a;
     }
 
     /* ======================= ТЁМНАЯ ТЕМА (Solarized Dark) =======================
        base03 #002b36 base02 #073642 base01 #586e75 base00 #657b83
-       base0 #839496 base1 #93a1a1 yellow #b58900 orange #cb4b16 red #dc322f
+       base0 #839496 base1 #93a1a1 yellow #b58900 orange #cb4b16
        blue #268bd2 cyan #2aa198 green #859900 */
-    body.dark { background: #002b36; color: #93a1a1; }
-    body.dark a { color: #268bd2; }
-    body.dark #masthead { background: linear-gradient(#073642, #002b36); border-bottom-color: #001f27; }
-    body.dark #masthead:visited, body.dark #masthead:active { color: #93a1a1; }
+    body.dark {
+      --red: #74364f;
+      --red-dark: #59283d;
+      --red-light: #e5b3c6;
+      --control-bg: #073642;
+      --control-hover: #0b3a47;
+      --control-text: #93a1a1;
+      --control-border: #586e75;
+      --control-light: #657b83;
+      --control-focus: #b58900;
+      --error-text: var(--red-light);
+      --primary-bg: #0b4a2f;
+      --primary-text: #b5e8a0;
+      --selected-bg: var(--red-dark);
+      --selected-text: var(--red-light);
+      background: #002b36; color: #93a1a1;
+    }
+    body.dark a:not(.button) { color: #268bd2; }
+    body.dark :is(#masthead, #wardNav .wnav-head, table.forum th, details.post > summary) {
+      background: var(--control-hover); color: var(--control-text); border-color: #001f27;
+    }
+    body.dark #masthead img.logoimg { border-color: var(--control-border); }
+    body.dark #masthead .slogan, body.dark #sbVolRow { color: var(--control-text); }
     body.dark #masthead .logo b { color: #b58900; }
-    body.dark #masthead .slogan { color: #586e75; }
     body.dark .navbar { background: #073642; border-color: #001f27; color: #93a1a1; }
-    body.dark .navbar b { color: #cb4b16; }
+    body.dark .navbar b, body.dark .navbar a { color: inherit; }
     body.dark table.forum { background: #073642; border-color: #002b36; }
-    body.dark table.forum th { background: #0b3a47; color: #93a1a1; border-color: #002b36; }
     body.dark table.forum td { background: #002b36; border-color: #073642; color: #93a1a1; }
     body.dark table.forum tr:nth-child(even) td { background: #022d38; }
     body.dark td.label-cell { background: #073642 !important; color: #93a1a1; }
     body.dark input.f { background: #002b36; color: #93a1a1; border-color: #586e75; }
-    body.dark button { background: #073642; color: #93a1a1; border-color: #586e75; border-top-color: #657b83; border-left-color: #657b83; }
-    body.dark button.primary { background: #0b4a2f; color: #b5e8a0; }
-    body.dark button.danger { background: #5a1a1a; color: #ffb3b3; }
-    body.dark button.sfx { background: #4a3a00; color: #ffd34d; border-color: #b58900 #7a5a08 #7a5a08 #b58900; }
+    body.dark input[type="range"] {
+      --range-track: #002b36;
+      --range-edge: #586e75;
+      --range-thumb: #586e75;
+      --range-light: #93a1a1;
+      --range-shadow: #001f27;
+      --range-focus: #b58900;
+    }
     body.dark #wardNav, body.dark #stageMain table.forum { background: #073642; border-color: #002b36; }
-    body.dark #wardNav .wnav-head { background: #0b3a47; }
-    body.dark .wnav-item { color: #268bd2; border-bottom-color: #022d38; }
+    body.dark .wnav-item { border-bottom-color: #022d38; }
     body.dark .wnav-item:hover { background: #022d38; }
     body.dark .wnav-item.current { background: #0b3a47; color: #b58900; }
-    body.dark #wardNav .wnav-new { background: #002b36; border-top-color: #002b36; color: #268bd2; }
     body.dark .tile { background: #001f27; border-color: #586e75; }
     body.dark .tile .ph { background-color: #073642; }
-    body.dark #themeToggle { background: #073642; color: #93a1a1; border-color: #586e75; }
     body.dark #foot { color: #586e75; border-top-color: #073642; }
     body.dark #bar { background: #073642; border-color: #002b36; }
 
@@ -363,24 +552,23 @@
        сворачивает/разворачивает (нативный <details>, без JS). Единый вид для
        всех списков: вход, палаты, аптечка, портреты, приветствие. */
     details.post {
-      border: 1px solid #a0a0a0; background: #f7f3ea; margin-bottom: 10px;
-      border-left: 3px solid #800000;
+      border: 1px solid var(--control-border); background: #f7f3ea; margin-bottom: 10px;
+      border-top: 0;
+      border-left: 3px solid var(--red);
+      box-shadow: 1px 1px 0 rgba(0,0,0,.2);
     }
     details.post > summary {
       list-style: none; cursor: pointer; user-select: none;
-      background: #800000; color: #fff; font-weight: bold;
-      padding: 4px 8px 4px 22px; font-size: 12px; position: relative;
+      background: var(--red); color: #fff; font-weight: bold;
+      padding: 4px 8px 4px 3em; font-size: 12px; position: relative;
     }
     details.post > summary::-webkit-details-marker { display: none; }
     /* [-]/[+] маркер слева, моноширинный — как на бордах */
     details.post > summary::before {
-      content: '[+]'; position: absolute; left: 5px; top: 4px;
+      content: '[+]'; position: absolute; left: 0.5em; top: 4px;
       font-family: "Courier New", monospace; color: #ffd34d; font-weight: bold;
     }
     details.post[open] > summary::before { content: '[\2212]'; } /* [−] */
-    details.post > summary .cnt-badge {
-      font-weight: normal; color: #ffd9d9; font-size: 11px; margin-left: 6px;
-    }
     details.post > .body { padding: 8px; }
     /* таблицы внутри поста — без внешних рамок/отступов (рамку даёт сам пост) */
     details.post table.forum { border: none; margin: 0; background: transparent; }
@@ -391,10 +579,9 @@
     details.post.banner .priem img { display: block; width: 100%; }
 
     /* ряд управления-строкой (кнопка + ползунок + аплоад) — компактно */
-    .ctl-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+    .ctl-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
-    body.dark details.post { background: #002b36; border-color: #073642; border-left-color: #b58900; }
-    body.dark details.post > summary { background: #0b3a47; color: #93a1a1; }
+    body.dark details.post { background: #002b36; border-left-color: var(--control-hover); }
     body.dark details.post > summary::before { color: #b58900; }
 
     /* --- центральная аутентификация: сплэш поверх всего --- */
@@ -405,7 +592,7 @@
     }
     #gate[hidden] { display: none; }
     .gate-box {
-      background: #f7f3ea; border: 1px solid #a0a0a0; border-top: 3px solid #800000;
+      background: #f7f3ea; border: 1px solid #a0a0a0; border-top: 3px solid var(--red);
       padding: 16px; width: 340px; max-width: 100%; text-align: center;
       box-shadow: 0 6px 30px rgba(0,0,0,.5);
     }
@@ -413,15 +600,15 @@
       width: 100%; height: auto; display: block; margin-bottom: 10px;
       border: 1px solid #a0a0a0;
     }
-    .gate-title { font-size: 15px; font-weight: bold; color: #800000; }
+    .gate-title { font-size: 15px; font-weight: bold; color: var(--red); }
     .gate-sub { font-size: 11px; color: #777; margin-bottom: 10px; }
     #gatePass {
       width: 100%; font-family: Verdana, Arial, sans-serif; font-size: 13px;
       padding: 5px 6px; border: 1px solid #7f9db9; margin-bottom: 8px;
     }
     #gateBtn { width: 100%; padding: 6px; font-size: 13px; }
-    #gateErr { color: #a00; font-size: 11px; min-height: 14px; margin-top: 6px; }
-    body.dark .gate-box { background: #073642; border-color: #002b36; border-top-color: #b58900; }
+    #gateErr { color: var(--error-text); font-size: 11px; min-height: 14px; margin-top: 6px; }
+    body.dark .gate-box { background: #073642; border-color: #002b36; border-top-color: var(--control-hover); }
     body.dark .gate-title { color: #b58900; }
     body.dark #gatePass { background: #002b36; color: #93a1a1; border-color: #586e75; }
 
@@ -431,8 +618,8 @@
       display: inline-block; margin: 0 6px; text-decoration: none;
       color: #0000cc; white-space: nowrap;
     }
-    .tagcloud a:hover { text-decoration: underline; color: #800000; }
-    .tagcloud a .code { color: #800000; font-family: "Courier New", monospace; font-weight: bold; }
+    .tagcloud a:hover { text-decoration: underline; color: var(--red); }
+    .tagcloud a .code { color: var(--red); font-family: "Courier New", monospace; font-weight: bold; }
     .tagcloud a.s1 { font-size: 11px; opacity: .8; }
     .tagcloud a.s2 { font-size: 13px; }
     .tagcloud a.s3 { font-size: 15px; }
@@ -444,6 +631,11 @@
   </style>
 </head>
 <body>
+  <script>
+    try {
+      document.body.classList.toggle('dark', localStorage.getItem('meetlerTheme') === 'dark');
+    } catch (_) {}
+  </script>
   <!-- центральная аутентификация: общий пароль на всё приложение.
        Показывается поверх всего, пока не введён верный пароль (cookie). -->
   <div id="gate" hidden>
@@ -456,7 +648,7 @@
       <div id="gateErr"></div>
     </div>
   </div>
-  <button id="themeToggle" title="Переключить тему (светлая / Solarized dark)">🌓 тема</button>
+  <button id="themeToggle" title="Переключить тему (светлая / Solarized dark)">тема</button>
   <a id="masthead" href="/" title="Вернуться в приёмное отделение">
     <img class="logoimg" src="/logo.png" alt="meetler" />
     <div>
@@ -466,7 +658,8 @@
   </a>
 
   <div id="wrap">
-    <!-- форма входа как "создать раздачу" -->
+    <div id="err" role="alert"></div>
+    <!-- Общий ник для входа в любую палату и создания новой. -->
     <div id="join">
       <div class="navbar">Вы здесь: <b>Приёмное отделение</b> » Поступить в палату</div>
 
@@ -476,38 +669,25 @@
       </details>
 
       <details class="post" open>
-        <summary>Госпитализация в палату</summary>
+        <summary>Пациент</summary>
         <div class="body">
-          <table class="forum">
-            <tr>
-              <td class="label-cell">Палата №:</td>
-              <td><input id="room" class="f" placeholder="a-z, 0-9, -, _" autocomplete="off" /></td>
-            </tr>
-            <tr>
-              <td class="label-cell">Как представить:</td>
-              <td><input id="name" class="f" placeholder="необязательно (Наполеон и т.п.)" autocomplete="off" /></td>
-            </tr>
-            <tr>
-              <td class="label-cell">&nbsp;</td>
-              <td>
-                <button id="joinBtn" class="primary">» Поступить »</button>
-                <div id="err"></div>
-              </td>
-            </tr>
-          </table>
+          <div class="join-field">
+            <label for="name">Как представить:</label>
+            <input id="name" class="f" placeholder="необязательно (Наполеон и т.п.)" autocomplete="off" />
+          </div>
         </div>
       </details>
 
       <!-- палаты: персистентный реестр, живёт пока кто-нибудь не закроет -->
       <details class="post" open>
-        <summary>Палаты <span class="cnt-badge">живут, пока кто-нибудь не закроет</span></summary>
+        <summary>Палаты</summary>
         <div class="body">
           <table class="forum">
             <tr>
               <td class="label-cell">Палата:</td>
               <td style="width: 90px;">Пациентов:</td>
               <td style="width: 110px;">Создана:</td>
-              <td style="width: 30px;">—</td>
+              <td style="width: 70px;">Удалить</td>
             </tr>
             <tbody id="roomsBody">
               <tr><td colspan="4" class="muted">загружается…</td></tr>
@@ -517,9 +697,24 @@
         </div>
       </details>
 
+      <details class="post" open>
+        <summary>Новая палата</summary>
+        <div class="body">
+          <form id="createForm">
+            <div class="join-field">
+              <label for="room">Палата №:</label>
+              <div class="join-controls">
+                <input id="room" class="f" placeholder="a-z, 0-9, -, _" autocomplete="off" required />
+                <button id="createBtn" class="primary" type="submit">+ Создать палату</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </details>
+
       <!-- облако диагнозов МКБ-10 (психические расстройства, класс V, F00-F99) -->
       <details class="post" id="dxCloud">
-        <summary>Диагнозы — МКБ-10 (класс V, F) <span class="cnt-badge">выбери свой</span></summary>
+        <summary>Диагнозы — МКБ-10 (класс V, F)</summary>
         <div class="body">
           <div class="tagcloud" id="tagCloud"></div>
         </div>
@@ -530,19 +725,31 @@
          справа — сама палата (бар, сетка тайлов, звуковая аптечка) -->
     <div id="stage">
       <aside id="wardNav">
+        <div class="wnav-head">Имя</div>
+        <form id="renameForm">
+          <input id="callName" class="f" placeholder="Ник (необязательно)" aria-label="Ник" autocomplete="off" />
+          <button id="renameBtn" type="submit">Перезайти</button>
+        </form>
         <div class="wnav-head">Палаты</div>
         <div id="wardNavList"><div class="wnav-empty">загружается…</div></div>
-        <a class="wnav-new" href="/" title="В приёмное отделение">＋ новая палата</a>
+        <a class="button wnav-new" href="/" title="В приёмное отделение">+ новая палата</a>
       </aside>
       <div id="stageMain">
-        <div class="navbar">Вы здесь: <b>Отделение</b> » Палата № <span id="roomCrumb">...</span></div>
+        <div class="navbar">Вы здесь: <a href="/">Отделение</a> » Палата № <span id="roomCrumb"></span></div>
+        <script>
+          document.getElementById('roomCrumb').textContent = document.documentElement.dataset.room || '';
+        </script>
+        <div id="callStatus" role="status" hidden>
+          <span id="callStatusText"></span>
+          <button id="restoreRetryBtn">Повторить</button>
+          <button id="restoreLeaveBtn" class="danger">Выйти</button>
+        </div>
         <div id="bar">
-          <button id="micBtn">Mic: on</button>
-          <button id="camBtn">Cam: on</button>
-          <button id="shareBtn">Демонстрация</button>
-          <button id="recBtn">Скачать 15с (mp3)</button>
-          <button id="tgRecBtn" title="Отправить последние 15с голосовым в Telegram-группу">15с → TG</button>
-          <button id="quietBtn" title="Замутить всё, кроме голосов людей: звуковая аптечка, музыка приветствия/прощания, Telegram-медиа, твари">🔇 Тишина</button>
+          <button id="micBtn" class="media-toggle" aria-pressed="false" autocomplete="off">Микрофон</button>
+          <button id="camBtn" class="media-toggle" aria-pressed="false" autocomplete="off">Камера</button>
+          <button id="shareBtn" class="media-toggle" aria-pressed="false">Демонстрация</button>
+          <button id="recBtn">Скачать 15с</button>
+          <button id="tgRecBtn" title="Отправить последние 15с голосовым в Telegram-группу">15с -&gt; TG</button>
           <button id="leaveBtn" class="danger">Выписаться</button>
           <span id="stats"></span>
         </div>
@@ -550,60 +757,108 @@
 
         <!-- soundboard: ЗВУКИ ЭТОЙ ПАЛАТЫ, любой пациент может залить -->
         <details class="post" id="soundboard" open>
-          <summary>Звуковая аптечка палаты <span class="cnt-badge">нажатие слышит вся палата</span></summary>
+          <summary>
+            <span>Звуковая аптечка палаты</span>
+            <label id="sbVolRow" for="sbVol" title="Громкость у себя">
+              <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M11 5 6 9H3v6h3l5 4V5Z" fill="currentColor" />
+                <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" fill="none" stroke="currentColor" stroke-width="2" />
+              </svg>
+              <input type="range" id="sbVol" min="0" max="100" value="100" aria-label="Громкость у себя" />
+            </label>
+          </summary>
           <div class="body">
             <div id="sbBtns"></div>
             <div class="ctl-row">
-              <button id="sbUploadBtn">+ залить звук (mp3/ogg/wav/m4a/webm/opus, до 2 МБ)</button>
-              <span id="sbVolRow">громкость у себя: <input type="range" id="sbVol" min="0" max="100" value="100" /></span>
+              <button id="sbUploadBtn">+ залить звук</button>
             </div>
             <input type="file" id="sbFile" hidden accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
             <div id="sbErr"></div>
           </div>
         </details>
 
+        <details class="post" id="youtube" open>
+          <summary>YouTube</summary>
+          <div class="body">
+            <form id="youtubeForm">
+              <input id="youtubeURL" class="f" placeholder="Ссылка на YouTube" aria-label="Ссылка на видео YouTube" autocomplete="off" required />
+              <button id="youtubeSubmit" class="primary" type="submit">Смотреть</button>
+            </form>
+            <div id="youtubeViewer" hidden>
+              <div id="youtubeFrame"></div>
+              <div class="youtube-controls">
+                <button id="youtubePlay" class="media-toggle" type="button" aria-pressed="false">Смотреть</button>
+                <input id="youtubeSeek" type="range" min="0" max="1" value="0" step="1" aria-label="Позиция видео" />
+                <span id="youtubeTime">0:00 / 0:00</span>
+                <label class="youtube-volume" for="youtubeVolume" title="Громкость у себя">
+                  <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M11 5 6 9H3v6h3l5 4V5Z" fill="currentColor" />
+                    <path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" fill="none" stroke="currentColor" stroke-width="2" />
+                  </svg>
+                  <input id="youtubeVolume" type="range" min="0" max="100" value="100" aria-label="Громкость YouTube у себя" />
+                </label>
+                <button id="youtubeRemove" class="danger" type="button">Убрать</button>
+              </div>
+            </div>
+            <div id="youtubeErr" role="alert"></div>
+          </div>
+        </details>
+
+        <details class="post" id="poker" open>
+          <summary>Покер</summary>
+          <div class="body">
+            <div id="pokerTable" class="poker-table">
+              <div class="poker-toolbar">
+                <button id="pokerLeave" class="danger" type="button" hidden>Встать</button>
+                <div class="poker-info">
+                  <span id="pokerStatus" class="poker-stat" role="status">Ожидание игроков</span>
+                  <span id="pokerActor" class="poker-stat" title="Сейчас ходит" hidden></span>
+                  <span id="pokerClock" class="poker-stat" title="Осталось времени на ход" hidden></span>
+                </div>
+              </div>
+              <div id="pokerPlayers" class="poker-players"></div>
+              <div id="pokerBoard" class="poker-board">
+                <div id="pokerCommunityCards" class="poker-cards" aria-label="Общие карты"></div>
+                <span id="pokerPot" class="poker-stat chips poker-pot" title="Общий банк">0</span>
+              </div>
+              <div id="pokerSelf" class="poker-self" hidden>
+                <span id="pokerSelfAction" class="poker-stat" hidden></span>
+                <span id="pokerSelfChips" class="poker-stat chips" title="Ваш банк"></span>
+                <div id="pokerHand" class="poker-cards" aria-label="Ваши карты"></div>
+                <div id="pokerSelfControls" class="poker-self-controls" hidden>
+                  <form id="pokerActions" class="poker-actions" hidden>
+                    <div class="poker-control-column">
+                      <button id="pokerCall" class="primary" type="button">Чек</button>
+                      <button id="pokerFold" class="danger" type="button">Пас</button>
+                    </div>
+                    <span class="poker-control-column poker-bet">
+                      <input id="pokerBet" class="f" type="number" min="10" step="1" inputmode="numeric" aria-label="Ставка до" required />
+                      <button id="pokerRaise" type="submit">Повысить</button>
+                    </span>
+                  </form>
+                  <button id="pokerDeal" class="primary" type="button">Раздать</button>
+                </div>
+              </div>
+            </div>
+            <div id="pokerErr" role="alert"></div>
+          </div>
+        </details>
+
         <!-- галерея портретов ПАЛАТЫ: каждому пациенту случайный; удаление по 3 голосам -->
         <details class="post" id="avatars" open>
-          <summary>Галерея портретов палаты <span class="cnt-badge"><span id="avatarCount">0</span> шт.</span></summary>
+          <summary>Галерея портретов палаты</summary>
           <div class="body">
-            <div style="font-size:11px;color:#4a3b1a;margin-bottom:4px;">
-              каждому пациенту достаётся случайный. Удалить можно голосованием (нужно 3).
+            <input type="file" id="avatarFile" hidden accept="image/*" />
+            <div id="avatarThumbs">
+              <button id="avatarUploadBtn" title="Добавить портрет" aria-label="Добавить портрет">+</button>
             </div>
-            <div class="ctl-row">
-              <button id="avatarUploadBtn">+ принести портрет (jpg/png/gif/webp, до 4 МБ)</button>
-            </div>
-            <input type="file" id="avatarFile" hidden accept=".jpg,.jpeg,.png,.gif,.webp" />
-            <div id="avatarThumbs"></div>
             <div id="avatarErr"></div>
           </div>
         </details>
 
-        <!-- звук приветствия палаты: играет у всех при входе пациента -->
-        <details class="post" id="welcome">
-          <summary>Звук приветствия палаты <span class="cnt-badge">играет при входе пациента</span></summary>
-          <div class="body">
-            <div class="ctl-row">
-              <button id="welUploadBtn">+ задать свой звук (mp3/ogg/wav, до 2 МБ)</button>
-              <button id="welResetBtn">вернуть дефолтный</button>
-              <button id="welTestBtn">проверить</button>
-            </div>
-            <input type="file" id="welFile" hidden accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
-            <div id="welErr"></div>
-          </div>
-        </details>
-
-        <!-- звук прощания палаты: играет у всех при уходе пациента -->
-        <details class="post" id="farewell">
-          <summary>Звук прощания палаты <span class="cnt-badge">играет при уходе пациента</span></summary>
-          <div class="body">
-            <div class="ctl-row">
-              <button id="farUploadBtn">+ задать свой звук (mp3/ogg/wav, до 2 МБ)</button>
-              <button id="farResetBtn">вернуть дефолтный</button>
-              <button id="farTestBtn">проверить</button>
-            </div>
-            <input type="file" id="farFile" hidden accept=".mp3,.ogg,.oga,.wav,.m4a,.webm,.opus" />
-            <div id="farErr"></div>
-          </div>
+        <details class="post" id="roomCues">
+          <summary>Звуки входа и выхода</summary>
+          <div class="body" id="cueRows"></div>
         </details>
       </div>
     </div>
@@ -611,8 +866,6 @@
 
   <div id="foot">meetler · главврач на обходе · powered by LiveKit · no cookies · no санитары · гойда</div>
 
-  <!-- lamejs: клиентский MP3-энкодер для кнопки "Скачать 15с (mp3)" -->
-  <script src="/vendor/lame.min.js"></script>
   <script type="module" src="/app.js"></script>
   <!-- декоративная живность (муха/таракан): появляются на 10с в случайные
        промежутки со звуком. Чистый оверлей, не мешает палате. -->

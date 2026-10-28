@@ -1,0 +1,1382 @@
+openapi: 3.0.3
+info:
+  title: Meetler API
+  version: 0.1.0
+  description: |
+    Rooms, media, and voting.
+
+    When APP_PASSWORD is configured, /api/* requires the meetler_auth cookie,
+    except /api/auth. With an empty APP_PASSWORD, authentication is disabled.
+servers:
+  - url: /
+    description: Same origin as the web application
+security:
+  - cookieAuth: []
+tags:
+  - name: Health
+  - name: Auth
+    description: Shared-password authentication and LiveKit access tokens
+  - name: Rooms
+  - name: Sounds
+  - name: Avatars
+  - name: Votes
+  - name: Cues
+    description: Custom greeting and goodbye sounds
+  - name: Telegram
+    description: Forward room recordings to linked Telegram chats
+  - name: Poker
+    description: Six seats, 1000 virtual chips, 5/10 blinds. Tables reset on API restart.
+  - name: YouTube
+    description: Shared room playback. Resets on API restart.
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [Health]
+      summary: Check whether the API is running
+      security: []
+      responses:
+        '200':
+          description: API process is responding.
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum: [ok]
+  /api/auth:
+    get:
+      operationId: checkAuth
+      tags: [Auth]
+      summary: Check the current authentication cookie
+      description: Always succeeds when APP_PASSWORD is empty.
+      security: []
+      responses:
+        '200':
+          description: Authenticated, or authentication is disabled.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      operationId: authenticate
+      tags: [Auth]
+      summary: Log in with the shared password
+      security: []
+      requestBody:
+        description: Required when APP_PASSWORD is configured.
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  format: password
+      responses:
+        '204':
+          description: Logged in, or authentication is disabled.
+          headers:
+            Set-Cookie:
+              description: |
+                meetler_auth cookie, valid for 30 days.
+                HttpOnly; SameSite=Lax; Secure over HTTPS.
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/token:
+    post:
+      operationId: createToken
+      tags: [Auth]
+      summary: Issue a LiveKit room-join token
+      description: |
+        Creates a new anon- identity and registers the room. Grants publishing,
+        subscribing, data publishing, and own metadata updates.
+        Token lifetime is configured by TOKEN_TTL (default 6h).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [room]
+              properties:
+                room:
+                  type: string
+                  description: Trimmed, then validated as 1–64 ASCII letters, digits, underscores, or hyphens.
+                  example: palata-6
+                name:
+                  type: string
+                  description: Trimmed and truncated to 40 bytes. Defaults to Гость if empty.
+                  example: Пациент
+      responses:
+        '200':
+          description: LiveKit access token and assigned identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/kick:
+    post:
+      operationId: kickParticipant
+      tags: [Rooms]
+      summary: Remove a participant from a LiveKit room
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [room, identity]
+              properties:
+                room:
+                  $ref: '#/components/schemas/RoomName'
+                identity:
+                  $ref: '#/components/schemas/Identity'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+  /api/rooms:
+    get:
+      operationId: listRooms
+      tags: [Rooms]
+      summary: List registered, active, and protected rooms
+      description: |
+        Sorted by participant count descending, then name ascending. If LiveKit
+        is unavailable, registered and protected rooms are still returned with
+        zero participants.
+      responses:
+        '200':
+          description: Rooms.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Room'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    delete:
+      operationId: deleteRoom
+      tags: [Rooms]
+      summary: Close a room and delete its stored media
+      description: |
+        Disconnects participants and removes sounds, portraits, likes, and cues.
+        Idempotent for missing rooms.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ProtectedRoom'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/sounds:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    get:
+      operationId: listSounds
+      tags: [Sounds]
+      summary: List soundboard files
+      description: Sorted by label, then ID.
+      responses:
+        '200':
+          description: Soundboard files.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Sound'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: uploadSound
+      tags: [Sounds]
+      summary: Upload a soundboard file
+      description: |
+        Accepts .mp3, .ogg, .oga, .wav, .m4a, .webm, or .opus filenames,
+        case-insensitively. File limit is 2 MiB; multipart body limit is
+        2 MiB + 4096 bytes. Up to 200 sounds per room.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                label:
+                  type: string
+                  description: Trimmed and truncated to 32 bytes. Defaults to the filename stem, then звук.
+      responses:
+        '201':
+          description: Stored sound.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/MediaLimit'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/sounds/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/MediaID'
+    get:
+      operationId: getSound
+      tags: [Sounds]
+      summary: Download a soundboard file
+      parameters:
+        - $ref: '#/components/parameters/Range'
+        - $ref: '#/components/parameters/IfNoneMatch'
+        - $ref: '#/components/parameters/IfModifiedSince'
+      responses:
+        '200':
+          $ref: '#/components/responses/Media'
+        '206':
+          $ref: '#/components/responses/PartialMedia'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteSound
+      tags: [Sounds]
+      summary: Delete a soundboard file immediately
+      description: Idempotent for missing files.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/avatars:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    get:
+      operationId: listAvatars
+      tags: [Avatars]
+      summary: List room portraits and like counts
+      description: Sorted by ID.
+      responses:
+        '200':
+          description: Room portraits.
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items:
+                  $ref: '#/components/schemas/Avatar'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: uploadAvatar
+      tags: [Avatars]
+      summary: Upload a room portrait
+      description: |
+        File limit is 4 MiB; multipart body limit is 4 MiB + 4096 bytes.
+        Up to 200 portraits per room.
+      requestBody:
+        $ref: '#/components/requestBodies/FileUpload'
+      responses:
+        '201':
+          description: Stored portrait.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Avatar'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/MediaLimit'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/avatars/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/MediaID'
+    get:
+      operationId: getAvatar
+      tags: [Avatars]
+      summary: Download a room portrait
+      parameters:
+        - $ref: '#/components/parameters/Range'
+        - $ref: '#/components/parameters/IfNoneMatch'
+        - $ref: '#/components/parameters/IfModifiedSince'
+      responses:
+        '200':
+          $ref: '#/components/responses/Media'
+        '206':
+          $ref: '#/components/responses/PartialMedia'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteAvatar
+      tags: [Avatars]
+      summary: Delete a portrait and its likes immediately
+      description: Idempotent for missing files.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/avatars/{id}/like:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/MediaID'
+    post:
+      operationId: toggleAvatarLike
+      tags: [Avatars]
+      summary: Add or withdraw a portrait like
+      description: Likes are deduplicated by voter ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [voter]
+              properties:
+                voter:
+                  $ref: '#/components/schemas/Voter'
+      responses:
+        '200':
+          description: Updated like count and this voter's state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [likes, liked]
+                properties:
+                  likes:
+                    type: integer
+                    minimum: 0
+                  liked:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/votes:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    get:
+      operationId: listVotes
+      tags: [Votes]
+      summary: Get active vote counts and optionally your own votes
+      description: |
+        Returns a counts map, or {counts, voted} when voter is supplied.
+        Votes expire after five minutes.
+      parameters:
+        - name: voter
+          in: query
+          description: Voter ID to include your active votes.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active votes.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/VoteCounts'
+                  - $ref: '#/components/schemas/VoteSnapshot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: toggleVote
+      tags: [Votes]
+      summary: Add or withdraw a vote, executing the action at the threshold
+      description: |
+        Requires three distinct voter IDs, or one for kicking tgbridge.
+        Repeating a vote withdraws it. Reaching the threshold triggers the
+        action and clears the votes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, target, voter]
+              properties:
+                kind:
+                  type: string
+                  enum: [kick, sound, avatar, room]
+                target:
+                  type: string
+                  description: |
+                    kick: participant identity; sound/avatar: stored file ID.
+                    For room votes, use the room path parameter.
+                voter:
+                  $ref: '#/components/schemas/Voter'
+      responses:
+        '200':
+          description: Vote count and threshold result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ProtectedRoom'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    get:
+      operationId: getYouTubePlayback
+      tags: [YouTube]
+      summary: Get shared playback
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/video:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    put:
+      operationId: setYouTubeVideo
+      tags: [YouTube]
+      summary: Start a video for the room
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [videoId]
+              properties:
+                videoId:
+                  type: string
+                  pattern: '^[a-zA-Z0-9_-]{11}$'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: removeYouTubeVideo
+      tags: [YouTube]
+      summary: Remove the room's video
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/play:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    post:
+      operationId: playYouTubeVideo
+      tags: [YouTube]
+      summary: Play from a position
+      requestBody:
+        $ref: '#/components/requestBodies/YouTubePosition'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No video selected.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/pause:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    post:
+      operationId: pauseYouTubeVideo
+      tags: [YouTube]
+      summary: Pause at a position
+      requestBody:
+        $ref: '#/components/requestBodies/YouTubePosition'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No video selected.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/youtube/seek:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    post:
+      operationId: seekYouTubeVideo
+      tags: [YouTube]
+      summary: Seek without changing play/pause state
+      requestBody:
+        $ref: '#/components/requestBodies/YouTubePosition'
+      responses:
+        '200':
+          $ref: '#/components/responses/YouTubePlayback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No video selected.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    get:
+      operationId: getPokerTable
+      tags: [Poker]
+      summary: Get the room's poker table
+      description: Include X-Poker-Player to see your hole cards.
+      parameters:
+        - name: X-Poker-Player
+          in: header
+          schema:
+            $ref: '#/components/schemas/PokerPlayerKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/PokerTable'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/seats:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: sitAtPokerTable
+      tags: [Poker]
+      summary: Take a seat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seat, identity]
+              properties:
+                seat:
+                  type: integer
+                  minimum: 0
+                  maximum: 5
+                name:
+                  type: string
+                  description: Display name.
+                identity:
+                  $ref: '#/components/schemas/Identity'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/seats/me:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    delete:
+      operationId: leavePokerTable
+      tags: [Poker]
+      summary: Leave the table
+      description: Frees the seat immediately. Committed bets stay in the pot.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/deal:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: dealPokerHand
+      tags: [Poker]
+      summary: Deal the next hand
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/refill:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: refillPokerChips
+      tags: [Poker]
+      summary: Refill an empty stack between hands
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/fold:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: foldPokerHand
+      tags: [Poker]
+      summary: Fold your hand
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/check:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: checkPokerBet
+      tags: [Poker]
+      summary: Check
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/call:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: callPokerBet
+      tags: [Poker]
+      summary: Call the current bet
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/poker/raise:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - $ref: '#/components/parameters/PokerPlayer'
+    post:
+      operationId: raisePokerBet
+      tags: [Poker]
+      summary: Bet or raise
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: integer
+                  minimum: 0
+                  description: Total contribution for the current betting round.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PokerConflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/{cue}:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+      - name: cue
+        in: path
+        required: true
+        description: Greeting or goodbye cue.
+        schema:
+          type: string
+          enum: [welcome, farewell]
+    get:
+      operationId: getCue
+      tags: [Cues]
+      summary: Download a custom greeting or goodbye sound
+      description: |
+        Returns 404 when the room uses the default cue.
+      parameters:
+        - $ref: '#/components/parameters/Range'
+      responses:
+        '200':
+          $ref: '#/components/responses/Media'
+        '206':
+          $ref: '#/components/responses/PartialMedia'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    head:
+      operationId: checkCue
+      tags: [Cues]
+      summary: Check for a custom cue without downloading it
+      responses:
+        '200':
+          description: Custom cue exists.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: uploadCue
+      tags: [Cues]
+      summary: Set or replace a custom greeting or goodbye sound
+      description: |
+        Accepts the same formats as soundboard uploads.
+        File limit is 2 MiB; multipart body limit is 2 MiB + 4096 bytes.
+      requestBody:
+        $ref: '#/components/requestBodies/FileUpload'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteCue
+      tags: [Cues]
+      summary: Remove a custom cue and restore the frontend default
+      description: Idempotent when no custom cue exists.
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/rooms/{room}/tg-voice:
+    parameters:
+      - $ref: '#/components/parameters/Room'
+    post:
+      operationId: sendTelegramVoice
+      tags: [Telegram]
+      summary: Send a room recording as a Telegram voice message
+      description: |
+        Converts the recording to Ogg/Opus and sends it to linked chats.
+        Request body limit is 8 MiB. Success means at least one chat received it.
+      requestBody:
+        $ref: '#/components/requestBodies/FileUpload'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No Telegram chat is linked to this room.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          description: Telegram bridge response.
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: meetler_auth
+      description: Obtained through POST /api/auth. Required only when APP_PASSWORD is configured.
+  parameters:
+    PokerPlayer:
+      name: X-Poker-Player
+      in: header
+      required: true
+      schema:
+        $ref: '#/components/schemas/PokerPlayerKey'
+    Room:
+      name: room
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/RoomName'
+    MediaID:
+      name: id
+      in: path
+      required: true
+      description: File ID returned by the upload or listing.
+      schema:
+        type: string
+        minLength: 1
+        example: 0123456789abcdef.wav
+    Range:
+      name: Range
+      in: header
+      schema:
+        type: string
+        example: bytes=0-1023
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      schema:
+        type: string
+        example: '"0123456789abcdef.wav"'
+    IfModifiedSince:
+      name: If-Modified-Since
+      in: header
+      schema:
+        type: string
+        example: 'Sun, 25 Oct 2026 12:00:00 GMT'
+  requestBodies:
+    YouTubePosition:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [position]
+            properties:
+              position:
+                type: number
+                minimum: 0
+                description: Seconds from the start of the video.
+    FileUpload:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            required: [file]
+            properties:
+              file:
+                type: string
+                format: binary
+  schemas:
+    YouTubePlayback:
+      type: object
+      required: [videoId, playing, position, revision]
+      properties:
+        videoId:
+          type: string
+          description: Empty when no video is selected.
+        playing:
+          type: boolean
+        position:
+          type: number
+          minimum: 0
+          description: Playback position in seconds at the time of the response.
+        revision:
+          type: integer
+          format: int64
+    PokerPlayerKey:
+      type: string
+      minLength: 16
+      maxLength: 64
+      pattern: '^[a-zA-Z0-9_-]{16,64}$'
+      description: Private client-generated random key identifying your seat.
+    PokerCard:
+      type: integer
+      minimum: 0
+      maximum: 51
+      description: Rank is value % 13 (2 through ace); suit is floor(value / 13) (spades, hearts, diamonds, clubs).
+    PokerSeat:
+      type: object
+      nullable: true
+      required: [name, chips, bet, inHand, folded, you, cardCount]
+      properties:
+        name:
+          type: string
+        chips:
+          type: integer
+          minimum: 0
+        bet:
+          type: integer
+          minimum: 0
+          description: Contribution for the current betting round.
+        inHand:
+          type: boolean
+        folded:
+          type: boolean
+        lastAction:
+          type: string
+          enum: [smallBlind, bigBlind, fold, check, call, bet, raise]
+        lastAmount:
+          type: integer
+          minimum: 0
+        net:
+          type: integer
+          description: Net chip change for the completed hand.
+        you:
+          type: boolean
+        cardCount:
+          type: integer
+          minimum: 0
+          maximum: 2
+        cards:
+          type: array
+          maxItems: 2
+          description: Your hole cards, or an opponent's cards at showdown.
+          items:
+            $ref: '#/components/schemas/PokerCard'
+    PokerState:
+      type: object
+      required: [seats, board, dealer, turn, bet, minRaise, pot, hand, street, result, deadline, canDeal, canRaise]
+      properties:
+        seats:
+          type: array
+          minItems: 6
+          maxItems: 6
+          items:
+            $ref: '#/components/schemas/PokerSeat'
+        board:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/PokerCard'
+        dealer:
+          type: integer
+          minimum: -1
+          maximum: 5
+        turn:
+          type: integer
+          minimum: -1
+          maximum: 5
+          description: Acting seat, or -1 between hands.
+        bet:
+          type: integer
+          minimum: 0
+          description: Current bet to match.
+        minRaise:
+          type: integer
+          minimum: 10
+          description: Minimum full raise increment.
+        pot:
+          type: integer
+          minimum: 0
+        hand:
+          type: integer
+          minimum: 0
+        street:
+          type: string
+          enum: [waiting, preflop, flop, turn, river, finished]
+        result:
+          type: string
+        deadline:
+          type: integer
+          format: int64
+          description: Turn deadline as Unix milliseconds; zero between hands.
+        canDeal:
+          type: boolean
+        canRaise:
+          type: boolean
+    RoomName:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[a-zA-Z0-9_-]{1,64}$'
+      example: palata-6
+    Identity:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[a-zA-Z0-9_-]{1,64}$'
+      example: anon-0123456789abcdef
+    Voter:
+      type: string
+      description: Client-generated ID; 1–64 bytes after trimming.
+      example: c-example-client
+    Token:
+      type: object
+      required: [token, identity, room]
+      properties:
+        token:
+          type: string
+          description: LiveKit JWT.
+        identity:
+          type: string
+          pattern: '^anon-[0-9a-f]{16}$'
+          example: anon-0123456789abcdef
+        room:
+          $ref: '#/components/schemas/RoomName'
+    Room:
+      type: object
+      required: [name, participants, createdAt]
+      properties:
+        name:
+          $ref: '#/components/schemas/RoomName'
+        participants:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 4294967295
+        createdAt:
+          type: integer
+          format: int64
+          description: Unix timestamp in seconds; zero for an unregistered protected room.
+          example: 1792929600
+    Sound:
+      type: object
+      required: [id, label, url]
+      properties:
+        id:
+          type: string
+          example: 0123456789abcdef.wav
+        label:
+          type: string
+          example: звук
+        url:
+          type: string
+          example: /api/rooms/palata-6/sounds/0123456789abcdef.wav
+    Avatar:
+      type: object
+      required: [id, url, likes]
+      properties:
+        id:
+          type: string
+          example: 0123456789abcdef.png
+        url:
+          type: string
+          example: /api/rooms/palata-6/avatars/0123456789abcdef.png
+        likes:
+          type: integer
+          minimum: 0
+    VoteCounts:
+      type: object
+      description: Active vote counts keyed by kind:target.
+      additionalProperties:
+        type: integer
+        minimum: 1
+      example:
+        'kick:anon-0123456789abcdef': 2
+    VoteSnapshot:
+      type: object
+      required: [counts, voted]
+      properties:
+        counts:
+          $ref: '#/components/schemas/VoteCounts'
+        voted:
+          type: object
+          description: Active votes cast by the requested voter, keyed by kind:target.
+          additionalProperties:
+            type: boolean
+          example:
+            'kick:anon-0123456789abcdef': true
+    VoteResult:
+      type: object
+      required: [count, threshold, done, voted]
+      properties:
+        count:
+          type: integer
+          minimum: 0
+          description: Count immediately after the toggle, before a completed vote is cleared.
+        threshold:
+          type: integer
+          enum: [1, 3]
+        done:
+          type: boolean
+          description: Threshold was reached and the action was attempted.
+        voted:
+          type: boolean
+          description: Whether this voter has an active vote after the request. False when the vote completes.
+  headers:
+    CacheControl:
+      schema:
+        type: string
+    ETag:
+      description: Quoted file ID for sounds and portraits.
+      schema:
+        type: string
+    LastModified:
+      description: Creation date for sounds and portraits.
+      schema:
+        type: string
+    AcceptRanges:
+      schema:
+        type: string
+        enum: [bytes]
+    ContentRange:
+      description: Served range, or total length for an unsatisfiable range.
+      schema:
+        type: string
+        example: bytes 0-1023/2048
+  responses:
+    YouTubePlayback:
+      description: Current shared playback.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/YouTubePlayback'
+    PokerConflict:
+      description: Seat unavailable, wrong turn, or illegal move.
+      content:
+        text/plain:
+          schema:
+            type: string
+    PokerTable:
+      description: Current table state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PokerState'
+    NoContent:
+      description: Completed.
+    BadRequest:
+      description: Invalid or oversized request.
+      content:
+        text/plain:
+          schema:
+            type: string
+    Unauthorized:
+      description: Missing or invalid authentication cookie, or incorrect login password.
+      content:
+        text/plain:
+          schema:
+            type: string
+    ProtectedRoom:
+      description: Protected rooms cannot be closed.
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: тихая палата не закрывается
+    NotFound:
+      description: Stored file or custom cue does not exist.
+      content:
+        text/plain:
+          schema:
+            type: string
+    MediaLimit:
+      description: The room already has 200 files of this media kind.
+      content:
+        text/plain:
+          schema:
+            type: string
+    InternalError:
+      description: Token creation, file reading, storage, or Telegram transcoding failed.
+      content:
+        text/plain:
+          schema:
+            type: string
+    UpstreamError:
+      description: LiveKit operation failed, Telegram bridge could not be reached, or no Telegram delivery succeeded.
+      content:
+        text/plain:
+          schema:
+            type: string
+    Unavailable:
+      description: Room storage is disabled, or the Telegram bridge is not configured for a Telegram voice request.
+      content:
+        text/plain:
+          schema:
+            type: string
+    Media:
+      description: File contents.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        Last-Modified:
+          $ref: '#/components/headers/LastModified'
+        Accept-Ranges:
+          $ref: '#/components/headers/AcceptRanges'
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    PartialMedia:
+      description: Requested bytes, or multipart/byteranges for multiple ranges.
+      headers:
+        Content-Range:
+          $ref: '#/components/headers/ContentRange'
+        Accept-Ranges:
+          $ref: '#/components/headers/AcceptRanges'
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    NotModified:
+      description: Cached file is current.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControl'
+        ETag:
+          $ref: '#/components/headers/ETag'
+    RangeNotSatisfiable:
+      description: Invalid or unsatisfiable byte range.
+      headers:
+        Content-Range:
+          $ref: '#/components/headers/ContentRange'
+      content:
+        text/plain:
+          schema:
+            type: string
