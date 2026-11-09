@@ -28,7 +28,7 @@ func TestGlobalMediaSurvivesRoomClosure(t *testing.T) {
 		_, _ = io.WriteString(w, `{}`)
 	}))
 	defer livekit.Close()
-	rs := newRoomService(livekit.URL, "key", "secret", root, "", "")
+	rs := newRoomService(livekit.URL, "key", "secret", root, "")
 	if !rs.ok {
 		t.Fatal("storage unavailable")
 	}

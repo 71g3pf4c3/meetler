@@ -36,7 +36,6 @@
         let pkgs = import nixpkgs { inherit system; }; in
         {
           api = pkgs.callPackage ./nix/api.nix { };
-          tgbridge = pkgs.callPackage ./nix/tgbridge.nix { };
           web = mkWeb pkgs;
           default = pkgs.callPackage ./nix/api.nix { };
         });

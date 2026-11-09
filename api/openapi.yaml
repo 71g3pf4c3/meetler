@@ -24,8 +24,6 @@ tags:
   - name: Votes
   - name: Cues
     description: Custom greeting and goodbye sounds
-  - name: Telegram
-    description: Forward room recordings to linked Telegram chats
   - name: Poker
     description: Six seats, 1000 virtual chips, 5/10 blinds. Tables reset on API restart.
   - name: YouTube
@@ -466,7 +464,7 @@ paths:
       tags: [Votes]
       summary: Add or withdraw a vote, executing the action at the threshold
       description: |
-        Requires three distinct voter IDs, or one for kicking tgbridge.
+        Requires three distinct voter IDs.
         Repeating a vote withdraws it. Reaching the threshold triggers the
         action and clears the votes.
       requestBody:
@@ -903,44 +901,6 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /api/rooms/{room}/tg-voice:
-    parameters:
-      - $ref: '#/components/parameters/Room'
-    post:
-      operationId: sendTelegramVoice
-      tags: [Telegram]
-      summary: Send a room recording as a Telegram voice message
-      description: |
-        Converts the recording to Ogg/Opus and sends it to linked chats.
-        Request body limit is 8 MiB. Success means at least one chat received it.
-      requestBody:
-        $ref: '#/components/requestBodies/FileUpload'
-      responses:
-        '204':
-          $ref: '#/components/responses/NoContent'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: No Telegram chat is linked to this room.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '502':
-          $ref: '#/components/responses/UpstreamError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
-        default:
-          description: Telegram bridge response.
-          content:
-            '*/*':
-              schema:
-                type: string
-                format: binary
 components:
   securitySchemes:
     cookieAuth:
@@ -1313,19 +1273,19 @@ components:
           schema:
             type: string
     InternalError:
-      description: Token creation, file reading, storage, or Telegram transcoding failed.
+      description: Token creation, file reading, or storage failed.
       content:
         text/plain:
           schema:
             type: string
     UpstreamError:
-      description: LiveKit operation failed, Telegram bridge could not be reached, or no Telegram delivery succeeded.
+      description: LiveKit operation failed.
       content:
         text/plain:
           schema:
             type: string
     Unavailable:
-      description: Room storage is disabled, or the Telegram bridge is not configured for a Telegram voice request.
+      description: Room storage is disabled.
       content:
         text/plain:
           schema:

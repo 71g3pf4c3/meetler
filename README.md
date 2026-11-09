@@ -1,25 +1,20 @@
 # meetler
 
-Видеоконференции в браузере: LiveKit SFU, nginx, Go API и необязательный
-Telegram-мост. Участники входят по имени палаты без аккаунтов. `APP_PASSWORD`
+Видеоконференции в браузере: LiveKit SFU, nginx и Go API.
+Участники входят по имени палаты без аккаунтов. `APP_PASSWORD`
 включает общий пароль для доступа к API.
 
 - **web** — видеозвонки, шаринг экрана, громкость участников, общие звуки и портреты,
   голосования за кик и удаление, приветственные и прощальные звуки.
-- **api** — вход по паролю, JWT для LiveKit, реестр палат, загрузки, голосования
-  и передача аудио комнаты в Telegram.
-- **tgbridge** — медиа и TTS из Telegram в палаты, сохранение звуков в аптечку,
-  отправка аудио палаты в привязанные чаты.
-
-## Тихие палаты
-
-`PROTECTED_ROOMS` (csv, по умолчанию `tishina`) — палаты без шума: всегда
-в списке, их нельзя закрыть голосованием или DELETE, tgbridge в них не
-публикует (медиа, TTS, YouTube и `/soundboardsave` отклоняются). Список
-должен совпадать у api и tgbridge.
+- **api** — вход по паролю, JWT для LiveKit, реестр палат, загрузки и голосования.
 - **nginx** — HTTPS, статика, `/api/`, `/healthz` и WebSocket-сигналинг LiveKit.
 - **LiveKit** — медиа и встроенный TURN. В Compose настроен Redis;
   NixOS-модуль не требует его для одной ноды.
+
+## Тихие палаты
+
+`PROTECTED_ROOMS` (csv, по умолчанию `tishina`) — палаты, которые всегда видны
+в списке и которые нельзя закрыть голосованием или DELETE.
 
 ## NixOS
 
@@ -43,12 +38,6 @@ services.meetler = {
   sslCertificateKey = "/etc/ssl/meetler/private.key";
   livekitKeyFile = "/run/secrets/livekit-keys.yaml";
   environmentFiles = [ "/run/secrets/meetler-api.env" ];
-
-  telegram = {
-    enable = true;
-    environmentFile = "/run/secrets/telegram.env";
-    piperModel = "/var/lib/piper/glados.onnx";
-  };
 };
 ```
 
@@ -62,13 +51,8 @@ APP_PASSWORD=...
 ```
 
 `APP_PASSWORD` необязателен: пустое значение отключает проверку пароля.
-Файлы из `environmentFiles` читают и API, и Telegram-мост. Можно передать
-отдельные файлы с ключами и паролем. Бот получает `TELEGRAM_BOT_TOKEN` из
-`telegram.environmentFile`. Секреты хранятся вне Nix store.
-
-Модель Piper задаётся полным путём; рядом нужен файл `<model>.onnx.json`.
-Без `piperModel` TTS выключен. Модуль добавляет ffmpeg, yt-dlp и, при указанной
-модели, Piper.
+Файлы из `environmentFiles` читает API. Можно передать отдельные файлы
+с ключами и паролем. Секреты хранятся вне Nix store.
 
 Сертификат и ключ задаются **полными путями с любыми именами файлов**.
 Их используют nginx и TURN; файлы должны быть доступны группе `nginx`.
@@ -98,9 +82,8 @@ services.livekit.settings = {
 ```
 
 Модуль подставляет порты во внутренние URL, nginx и firewall.
-API, signaling API LiveKit и Telegram HTTP по умолчанию слушают loopback.
-Порт API — `services.meetler.port`, порт Telegram HTTP —
-`services.meetler.telegram.port` (по умолчанию 8090).
+API и signaling API LiveKit по умолчанию слушают loopback.
+Порт API — `services.meetler.port`.
 Отключить TURN: `services.livekit.settings.turn.enabled = false;`.
 Для собственного firewall: `services.meetler.openFirewall = false;`.
 
@@ -126,40 +109,18 @@ API медиа: `/api/sounds`, `/api/avatars`, `/api/welcome`, `/api/farewell`;
 при закрытии палат.
 
 `/healthz` возвращает статус процесса API и не проверяет доступность LiveKit.
-Голоса хранятся в памяти. Привязки Telegram-чатов к палатам — в SQLite
-(`TG_DB_PATH`; в NixOS — `/var/lib/meetler-tgbridge/meetler.db`).
-Логи NixOS: `journalctl -u meetler-api -u meetler-tgbridge -u livekit`.
+Голоса хранятся в памяти.
+Логи NixOS: `journalctl -u meetler-api -u livekit`.
 
-## Telegram
-
-- `/help` — справка; `/start` — её алиас.
-- `/palata <room>` — выбрать палату для чата; `/palata` — показать текущую.
-- `/tts <текст>` — озвучить текст; можно ответить командой на текстовое сообщение.
-- `/tovoice` в ответ на медиа — проиграть его в палате.
-- `/soundboardsave` в ответ на медиа — сохранить звук в общей аптечке.
-- Голосовые, аудио, видео, кружки и ссылки YouTube — проиграть в выбранной палате.
-
-Явная `#палата` имеет приоритет над выбором `/palata`, затем используется
-`DEFAULT_PALATA` (по умолчанию `telegram`). Выбор общий для чата; по умолчанию
-сбрасывается после перезапуска бота — задай `TG_DB_PATH` (SQLite-БД),
-чтобы привязки переживали рестарт. В тихие палаты (`PROTECTED_ROOMS`) бот
-не заходит и отвечает отказом. В группах бот обрабатывает адресованные ему
-сообщения: упоминание, ответ на его сообщение или явную палату для
-медиа/YouTube.
-Для получения обычных медиа в группе боту нужны права администратора или
-отключённый privacy mode через BotFather.
-
-Медиа и TTS обрезаются до 20 секунд. Это отдельный лимит от браузерной записи:
-клиент сохраняет или отправляет в Telegram последние 15 секунд микса палаты.
-Для отправки в Telegram чат должен выбрать палату через `/palata`.
+Клиент может сохранить последние 15 секунд звука палаты в WAV-файл.
 
 ## Разработка
 
-CI (GitHub Actions) на каждый push/PR: `go build`/`go vet` api и tgbridge,
+CI (GitHub Actions) на каждый push/PR: `go build`/`go vet`/`go test` API и
 проверка синтаксиса фронтенда.
 
 ## Nix-пакеты
 
-Flake экспортирует `api`, `tgbridge` и `web`. Пакет по умолчанию — `api`.
-Go-пакеты используют `buildGoLatestModule` и кеш полных модулей. При изменении
-`go.mod` или `go.sum` пересчитай `vendorHash` в `nix/api.nix` или `nix/tgbridge.nix`.
+Flake экспортирует `api` и `web`. Пакет по умолчанию — `api`.
+Go-пакет использует `buildGoLatestModule` и кеш полных модулей. При изменении
+`go.mod` или `go.sum` пересчитай `vendorHash` в `nix/api.nix`.

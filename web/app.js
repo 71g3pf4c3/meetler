@@ -133,13 +133,6 @@ async function castVote(rm, kind, target) {
   }
 }
 
-// порог для ключа голосования: tgbridge (служебный мост) выписывается первым
-// голосом, пациенты — коллегиально (VOTE_THRESHOLD). Сервер — истина порога
-// (отдаёт threshold в ответе POST), здесь — догадка для GET-счётчиков.
-function voteThresholdForKey(vkey) {
-  return vkey === 'kick:tgbridge' ? 1 : VOTE_THRESHOLD;
-}
-
 async function fetchVoteState(rm) {
   const revision = voteRevision;
   const res = await fetch(roomApi(rm) + '/votes?voter=' + encodeURIComponent(clientId()));
@@ -149,7 +142,7 @@ async function fetchVoteState(rm) {
 }
 
 function updateVoteCounter(el, count, th, voted = false) {
-  th = th || voteThresholdForKey(el.dataset.vkey);
+  th = th || VOTE_THRESHOLD;
   if (count > 0) el.dataset.votes = `${count}/${th}`;
   else delete el.dataset.votes;
   el.setAttribute('aria-pressed', String(voted));
@@ -172,7 +165,7 @@ function createVoteButton({ kind, target, roomName = () => room?.name, onDone, e
   const action = { kick: 'выписку', room: 'закрытие палаты', sound: 'удаление звука', avatar: 'удаление портрета' }[kind];
   const button = createButton('✕', {
     className: `icon-button remove-button ${compact ? 'icon-button--small ' : ''}${className}`.trim(),
-    title: `Голос за ${action} (нужно ${voteThresholdForKey(key)})`,
+    title: `Голос за ${action} (нужно ${VOTE_THRESHOLD})`,
   });
   button.dataset.vkey = key;
   button.setAttribute('aria-pressed', 'false');
@@ -506,7 +499,7 @@ function wireRoomEvents(r) {
     on(event, (participant) => {
       updateTile(participant);
       recomputeAvatars();
-      if (participant.identity !== 'tgbridge') playCue();
+      playCue();
     });
   }
   on(RoomEvent.ParticipantNameChanged, (_name, p) => updateTileLabel(p));
@@ -629,7 +622,7 @@ async function playCue(kind, defaultUrl) {
 // --- звук приветствия при входе участника ---
 function playWelcome() { playCue('welcome', '/welcome.mp3'); }
 
-// звук прощания при уходе участника. Не играем на уход служебного tgbridge.
+// звук прощания при уходе участника.
 function playFarewell() { playCue('farewell', '/farewell.mp3'); }
 
 // локальный тайл: создаётся СРАЗУ после входа (с аватаркой из пула), видео
@@ -1629,7 +1622,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Скачать или отправить последние 15 секунд звука.
+// Скачать последние 15 секунд звука.
 $('recBtn').onclick = () => {
   const blob = recording?.wav();
   if (!blob) { $('err').textContent = 'Пока нечего скачивать (запись ещё копится).'; return; }
@@ -1642,28 +1635,6 @@ $('recBtn').onclick = () => {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
-};
-
-const tgRecBtn = $('tgRecBtn');
-if (tgRecBtn) tgRecBtn.onclick = async () => {
-  if (!room) return;
-  const blob = recording?.wav();
-  if (!blob) { $('err').textContent = 'Пока нечего отправлять (запись ещё копится).'; return; }
-  tgRecBtn.disabled = true;
-  const prev = tgRecBtn.textContent;
-  tgRecBtn.textContent = 'отправляю…';
-  try {
-    const fd = new FormData();
-    fd.append('file', blob, 'mix.wav');
-    const res = await fetch(roomApi(room.name) + '/tg-voice', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error((await res.text()) || res.status);
-    tgRecBtn.textContent = '✓ ушло в TG';
-  } catch (e) {
-    $('err').textContent = 'В TG не ушло: ' + (e.message || e);
-    tgRecBtn.textContent = prev;
-  } finally {
-    setTimeout(() => { tgRecBtn.textContent = prev; tgRecBtn.disabled = false; }, 2500);
-  }
 };
 
 // свой уход: помечаем, чтобы Disconnected не показал "вас выписали"

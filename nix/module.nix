@@ -40,7 +40,7 @@ in
     environmentFiles = lib.mkOption {
       type = lib.types.listOf lib.types.path;
       default = [ ];
-      description = "Runtime environment files with LIVEKIT_API_KEY, LIVEKIT_API_SECRET and optional APP_PASSWORD. Shared with the Telegram bridge.";
+      description = "Runtime environment files with LIVEKIT_API_KEY, LIVEKIT_API_SECRET and optional APP_PASSWORD.";
     };
     stateDirectory = lib.mkOption {
       type = lib.types.str;
@@ -52,30 +52,13 @@ in
       default = "tishina";
       description = ''
         Comma-separated quiet rooms: always listed, cannot be closed by
-        voting or DELETE, tgbridge refuses to publish there.
+        voting or DELETE.
       '';
     };
     openFirewall = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = "Open HTTP, HTTPS, ICE and TURN ports.";
-    };
-    telegram = {
-      enable = lib.mkEnableOption "the meetler Telegram bridge";
-      environmentFile = lib.mkOption {
-        type = lib.types.path;
-        description = "Runtime environment file containing TELEGRAM_BOT_TOKEN.";
-      };
-      port = lib.mkOption {
-        type = lib.types.port;
-        default = 8090;
-        description = "Loopback HTTP port for sending room audio to Telegram.";
-      };
-      piperModel = lib.mkOption {
-        type = lib.types.nullOr lib.types.path;
-        default = null;
-        description = "Piper ONNX model with an adjacent .onnx.json file. Null disables TTS.";
-      };
     };
   };
 
@@ -109,9 +92,6 @@ in
         LIVEKIT_URL = livekitURL;
         ROOMS_DIR = "/var/lib/${cfg.stateDirectory}/rooms";
         PROTECTED_ROOMS = cfg.protectedRooms;
-      }
-      // lib.optionalAttrs cfg.telegram.enable {
-        TGBRIDGE_URL = "http://127.0.0.1:${toString cfg.telegram.port}";
       };
       serviceConfig = {
         ExecStart = lib.getExe packages.api;
@@ -121,47 +101,6 @@ in
           cfg.stateDirectory
           "${cfg.stateDirectory}/rooms"
         ];
-        StateDirectoryMode = "0700";
-        PrivateTmp = true;
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
-    };
-
-    systemd.services.meetler-tgbridge = lib.mkIf cfg.telegram.enable {
-      description = "meetler Telegram bridge";
-      wantedBy = [ "multi-user.target" ];
-      wants = [
-        "network-online.target"
-        "meetler-api.service"
-      ];
-      after = [
-        "network-online.target"
-        "meetler-api.service"
-      ];
-      path = [
-        pkgs.ffmpeg
-        pkgs.yt-dlp
-      ]
-      ++ lib.optional (cfg.telegram.piperModel != null) pkgs.piper-tts;
-      environment = {
-        LIVEKIT_URL = livekitURL;
-        SOUNDSVC_URL = backendURL;
-        TGBRIDGE_HTTP_ADDR = "127.0.0.1:${toString cfg.telegram.port}";
-        XDG_CACHE_HOME = "/var/cache/meetler-tgbridge";
-        PROTECTED_ROOMS = cfg.protectedRooms;
-        TG_DB_PATH = "/var/lib/meetler-tgbridge/meetler.db";
-      }
-      // lib.optionalAttrs (cfg.telegram.piperModel != null) {
-        PIPER_MODEL = toString cfg.telegram.piperModel;
-        PIPER_BIN = lib.getExe pkgs.piper-tts;
-      };
-      serviceConfig = {
-        ExecStart = lib.getExe packages.tgbridge;
-        EnvironmentFile = cfg.environmentFiles ++ [ cfg.telegram.environmentFile ];
-        DynamicUser = true;
-        CacheDirectory = "meetler-tgbridge";
-        StateDirectory = "meetler-tgbridge";
         StateDirectoryMode = "0700";
         PrivateTmp = true;
         Restart = "on-failure";

@@ -90,15 +90,6 @@ type voteSnapshot struct {
 	Voted  map[string]bool `json:"voted"`
 }
 
-// thresholdFor: tgbridge — служебный участник (мост), а не пациент: его
-// выписывает ПЕРВЫЙ голос. Живого человека — только коллегиально.
-func thresholdFor(kind, target string) int {
-	if kind == "kick" && target == "tgbridge" {
-		return 1
-	}
-	return voteThreshold
-}
-
 // POST /api/rooms/<room>/votes — добавить или отозвать свой голос;
 // при достижении порога исполняет действие на сервере и сбрасывает голоса.
 func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
@@ -123,7 +114,7 @@ func (vs *voteStore) cast(w http.ResponseWriter, r *http.Request, room string) {
 	}
 
 	k := voteKey{room, req.Kind, req.Target}
-	th := thresholdFor(req.Kind, req.Target)
+	th := voteThreshold
 
 	vs.mu.Lock()
 	vs.countLive(k)

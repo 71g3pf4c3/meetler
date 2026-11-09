@@ -201,8 +201,7 @@ func main() {
 		getEnv("LIVEKIT_URL", "ws://127.0.0.1:7880"),
 		cfg.apiKey, cfg.apiSecret,
 		getEnv("ROOMS_DIR", "/data/rooms"),
-		os.Getenv("TGBRIDGE_URL"),            // пусто — мост не настроен
-		getEnv("PROTECTED_ROOMS", "tishina"), // тихие палаты: без бота, не закрываются
+		getEnv("PROTECTED_ROOMS", "tishina"), // тихие палаты не закрываются
 	)
 	cfg.rooms = roomsSvc
 	if !roomsSvc.ok {

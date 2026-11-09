@@ -1,4 +1,4 @@
-# CI: линт Go-сервисов и синтаксис фронтенда.
+# CI: проверки Go API и синтаксис фронтенда.
 
 name: ci
 
@@ -17,9 +17,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: api/go.mod
-          cache-dependency-path: |
-            api/go.sum
-            tgbridge/go.sum
+          cache-dependency-path: api/go.sum
 
       - name: api — build + vet + test
         working-directory: api
@@ -27,12 +25,6 @@ jobs:
           go build ./...
           go vet ./...
           go test ./...
-
-      - name: tgbridge — build + vet
-        working-directory: tgbridge
-        run: |
-          go build ./...
-          go vet ./...
 
       - name: фронт — синтаксис (node --check)
         uses: actions/setup-node@v4

@@ -16,5 +16,4 @@ result-*
 *.log
 
 # бинари от локального `go build ./...`
-tgbridge/tgbridge
 api/api

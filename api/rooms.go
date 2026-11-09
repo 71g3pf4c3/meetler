@@ -26,22 +26,21 @@ type roomInfo struct {
 }
 
 type roomService struct {
-	client      *lksdk.RoomServiceClient
-	root        string // ROOMS_DIR
-	db          *roomDB
-	sb          *soundboard
-	av          *avatarStore
-	votes       *voteStore
-	poker       *pokerStore
-	youtube     *youtubeStore
-	tgbridgeURL string // база tgbridge HTTP (для "15с → TG"); "" = мост не настроен
-	ok          bool   // БД открыта; иначе /api/rooms* → 503 (токены и кик работают)
-	protected   map[string]bool
+	client    *lksdk.RoomServiceClient
+	root      string // ROOMS_DIR
+	db        *roomDB
+	sb        *soundboard
+	av        *avatarStore
+	votes     *voteStore
+	poker     *pokerStore
+	youtube   *youtubeStore
+	ok        bool // БД открыта; иначе /api/rooms* → 503 (токены и кик работают)
+	protected map[string]bool
 }
 
 // parseProtectedRooms: csv → set валидных имён палат. Тихие (protected) палаты:
-// всегда видны в списке, их нельзя закрыть (голосование/DELETE), tgbridge в
-// них не публикует. Дефолт — "tishina".
+// всегда видны в списке, их нельзя закрыть (голосование/DELETE).
+// Дефолт — "tishina".
 func parseProtectedRooms(csv string) map[string]bool {
 	out := map[string]bool{}
 	for _, s := range strings.Split(csv, ",") {
@@ -57,7 +56,7 @@ func (rs *roomService) isProtected(room string) bool {
 	return rs.protected[room]
 }
 
-func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL, protectedCSV string) *roomService {
+func newRoomService(lkURL, apiKey, apiSecret, root, protectedCSV string) *roomService {
 	if root == "" {
 		root = "/data/rooms"
 	}
@@ -74,10 +73,9 @@ func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL, protectedCSV st
 		}
 	}
 	rs := &roomService{
-		client:      client,
-		root:        root,
-		tgbridgeURL: tgbridgeURL,
-		protected:   parseProtectedRooms(protectedCSV),
+		client:    client,
+		root:      root,
+		protected: parseProtectedRooms(protectedCSV),
 	}
 	// SQLite: общие звуки/портреты/джинглы и реестр палат.
 	db, err := openRoomDB(filepath.Join(root, "meetler.db"))
@@ -107,7 +105,7 @@ func (rs *roomService) ensureRoom(room string) {
 	rs.db.roomRegister(room)
 }
 
-// identity участников: серверный anon-<hex> или tgbridge — безопасный набор
+// identity участников: безопасный набор символов
 var identRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 type kickRequest struct {
@@ -181,7 +179,7 @@ func (rs *roomService) handleRooms(w http.ResponseWriter, r *http.Request) {
 		})
 		delete(live, name) // отмечена из реестра
 	}
-	// живые палаты вне реестра (созданы мимо /api/token, напр. tgbridge)
+	// живые палаты вне реестра (созданы мимо /api/token)
 	for name, lr := range live {
 		if validRoom(name) {
 			out = append(out, roomInfo{Name: name, Participants: lr.participants, CreatedAt: lr.createdAt})
@@ -265,7 +263,7 @@ func (rs *roomService) handleMedia(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRoomScoped: room lifecycle, votes, games, and Telegram recordings.
+// handleRoomScoped: room lifecycle, votes, and games.
 func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) {
 	if !rs.ok {
 		http.Error(w, "room storage disabled", http.StatusServiceUnavailable)
@@ -291,8 +289,6 @@ func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) 
 	switch parts[1] {
 	case "votes":
 		rs.votes.dispatch(w, r, room, parts[2:])
-	case "tg-voice":
-		rs.handleTGVoice(w, r, room, parts[2:])
 	case "poker":
 		rs.poker.routes.ServeHTTP(w, r)
 	case "youtube":
