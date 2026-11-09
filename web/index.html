@@ -39,6 +39,7 @@
       --primary-text: #000;
       --selected-bg: var(--red-light);
       --selected-text: var(--red);
+      --speaking-color: #2e8b2e;
       margin: 0; padding: 0;
       font-family: Verdana, Arial, Tahoma, sans-serif; font-size: 12px;
       background: #e8e8e8; color: #000;
@@ -390,8 +391,6 @@
       aspect-ratio: 4/3; border: 2px solid #808080;
       display: flex; align-items: center; justify-content: center;
     }
-    /* говорящий — зелёная рамка как "онлайн" на форуме */
-    .tile.speaking { border-color: #2e8b2e; box-shadow: 0 0 0 1px #2e8b2e inset; }
     .tile video { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; }
     .tile .label {
       position: absolute; left: 0; bottom: 0;
@@ -421,6 +420,7 @@
       z-index: 100; aspect-ratio: auto; border: none; cursor: zoom-out;
       background: #000;
     }
+    .tile.speaking { border: 4px solid var(--speaking-color); box-shadow: none; outline: none; }
     .tile.max video { object-fit: contain; }
     .tile.max .ph { background-size: contain; background-color: #000; }
     body.tile-maximized { overflow: hidden; }
@@ -507,6 +507,7 @@
       --primary-text: #b5e8a0;
       --selected-bg: var(--red-dark);
       --selected-text: var(--red-light);
+      --speaking-color: #859900;
       background: #002b36; color: #93a1a1;
     }
     body.dark a:not(.button) { color: #268bd2; }
@@ -536,6 +537,7 @@
     body.dark .wnav-item:hover { background: #022d38; }
     body.dark .wnav-item.current { background: #0b3a47; color: #b58900; }
     body.dark .tile { background: #001f27; border-color: #586e75; }
+    body.dark .tile.speaking { border: 4px solid var(--speaking-color); box-shadow: none; outline: none; }
     body.dark .tile .ph { background-color: #073642; }
     body.dark #foot { color: #586e75; border-top-color: #073642; }
     body.dark #bar { background: #073642; border-color: #002b36; }

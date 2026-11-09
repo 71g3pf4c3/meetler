@@ -10,7 +10,7 @@ import {
 } from '/vendor/livekit-client.esm.mjs';
 import { createPokerTable } from '/poker.js';
 import { createYouTubePlayer } from '/youtube.js';
-import { getAudioContext, resumeAudio, createRecorder } from '/audio.js';
+import { getAudioContext, resumeAudio, createRecorder, createSpeakingDetector } from '/audio.js';
 
 const $ = (id) => document.getElementById(id);
 const page = document.documentElement;
@@ -25,6 +25,7 @@ const youtube = createYouTubePlayer();
 let room = null;
 let microphoneTrack = null;
 let recording = null;
+let stopLocalSpeaking = null;
 let joining = false;
 let leavingPage = false;
 // LiveKit disconnects on page leave; keep the outgoing call view intact.
@@ -305,6 +306,7 @@ function detachAudio(t, track) {
   recording?.removeTrack(track.mediaStreamTrack);
   const audio = t?.audioTracks.get(track);
   if (!audio) return;
+  audio.stopSpeaking?.();
   track.detach(audio.element);
   track.setWebAudioPlugins([]);
   audio.element.remove();
@@ -380,7 +382,9 @@ function attachTrack(participant, track, publication) {
     const element = track.attach();
     element.hidden = true;
     document.body.appendChild(element);
-    t.audioTracks.set(track, { element, soundboard: publication.trackName === 'sfx' });
+    const stopSpeaking = publication.source === Track.Source.Microphone
+      ? createSpeakingDetector(track, (speaking) => t.el.classList.toggle('speaking', speaking)) : null;
+    t.audioTracks.set(track, { element, soundboard: publication.trackName === 'sfx', stopSpeaking });
     applyTileVolume(t);
     recording?.addTrack(track.mediaStreamTrack);
   }
@@ -472,6 +476,7 @@ async function join(roomName = palataFromPath()) {
     if (restoreMic) await toggleDevice('micBtn', (participant) => setMicrophone(participant, true));
     return true;
   } catch (e) {
+    stopSpeakingIndicators();
     $('err').textContent = 'Ошибка входа: ' + (e.message || e);
     return false;
   } finally {
@@ -519,6 +524,8 @@ function wireRoomEvents(r) {
     if (pub.kind === Track.Kind.Video) attachLocalVideo(track);
     if (pub.source === Track.Source.Microphone && !selfLeaving) {
       microphoneTrack = track;
+      stopLocalSpeaking?.();
+      stopLocalSpeaking = createSpeakingDetector(track, (speaking) => localTile?.classList.toggle('speaking', speaking));
       const deviceId = track.mediaStreamTrack.getSettings().deviceId;
       if (deviceId) localStorage.setItem('meetlerMicDevice', deviceId);
     }
@@ -526,6 +533,7 @@ function wireRoomEvents(r) {
     syncMediaButtons();
   });
   on(RoomEvent.LocalTrackUnpublished, (pub) => {
+    if (pub.source === Track.Source.Microphone) { stopLocalSpeaking?.(); stopLocalSpeaking = null; }
     if (pub.kind === Track.Kind.Video) removeLocalVideo();
     if (pub.kind === Track.Kind.Audio && pub.track) recording?.removeTrack(pub.track.mediaStreamTrack);
     syncMediaButtons();
@@ -548,11 +556,6 @@ function wireRoomEvents(r) {
         ? 'Палату закрыли.'
         : 'Соединение с палатой потерялось.';
     }
-  });
-  on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
-    const speakingSids = new Set(speakers.map((p) => p.sid));
-    for (const [sid, tile] of tiles) tile.el.classList.toggle('speaking', speakingSids.has(sid));
-    localTile?.classList.toggle('speaking', speakingSids.has(r.localParticipant.sid));
   });
 }
 
@@ -1551,10 +1554,19 @@ $('leaveBtn').onclick = leaveCall;
 $('restoreLeaveBtn').onclick = leaveCall;
 $('restoreRetryBtn').onclick = () => checkAccess();
 
+function stopSpeakingIndicators() {
+  stopLocalSpeaking?.();
+  stopLocalSpeaking = null;
+  for (const tile of tiles.values()) {
+    for (const audio of tile.audioTracks.values()) audio.stopSpeaking?.();
+  }
+}
+
 function cleanup() {
   poker.disconnect();
   youtube.disconnect();
   activeSfx?.stop();
+  stopSpeakingIndicators();
   refreshCueControls();
   recording?.stop();
   recording = null;
