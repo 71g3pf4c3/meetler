@@ -22,9 +22,8 @@ type avatarStore struct {
 }
 
 type avatarMeta struct {
-	ID    string `json:"id"`
-	URL   string `json:"url"`   // /api/avatars/<id>
-	Likes int    `json:"likes"` // число лайков (чем больше — тем реже выдаётся)
+	ID  string `json:"id"`
+	URL string `json:"url"` // /api/avatars/<id>
 }
 
 func avatarURL(id string) string {
@@ -32,8 +31,6 @@ func avatarURL(id string) string {
 }
 
 // GET /api/avatars -> общий список портретов для всех палат.
-// ПОРЯДОК СТАБИЛЕН (сортировка по id) — от него зависит детерминированный
-// выбор аватарки хешем на клиентах.
 func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(as.db.avatarList())
@@ -107,7 +104,7 @@ func (as *avatarStore) remove(w http.ResponseWriter, _ *http.Request, id string)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// delete удаляет общий портрет (+лайки). Внутренний метод, переиспользуется
+// delete удаляет общий портрет. Внутренний метод, переиспользуется
 // голосованием (votes.go). Нет записи → не ошибка (идемпотентно).
 func (as *avatarStore) delete(id string) error {
 	if id == "" || id != filepath.Base(id) {
@@ -116,36 +113,7 @@ func (as *avatarStore) delete(id string) error {
 	return as.db.avatarDelete(id)
 }
 
-// POST /api/avatars/<id>/like {voter} -> переключить лайк.
-// Возвращает {likes, liked}. Дедуп по voter (анонимный client-id браузера).
-func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, id string) {
-	if id == "" || id != filepath.Base(id) {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	var req struct {
-		Voter string `json:"voter"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	voter := strings.TrimSpace(req.Voter)
-	if l := len(voter); l < 1 || l > 64 {
-		http.Error(w, "bad voter", http.StatusBadRequest)
-		return
-	}
-	likes, liked, ok := as.db.avatarLikeToggle(id, voter)
-	if !ok {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]any{"likes": likes, "liked": liked})
-}
-
-// dispatch роутит /api/avatars[/<id>[/like]] по методу.
+// dispatch роутит /api/avatars[/<id>] по методу.
 func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, rest []string) {
 	if len(rest) == 0 {
 		switch r.Method {
@@ -168,14 +136,6 @@ func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, rest []s
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-		return
-	}
-	if len(rest) == 2 && rest[1] == "like" {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		as.like(w, r, rest[0])
 		return
 	}
 	http.Error(w, "not found", http.StatusNotFound)

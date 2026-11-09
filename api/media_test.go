@@ -84,18 +84,6 @@ func TestGlobalMediaSurvivesRoomClosure(t *testing.T) {
 	for _, cue := range []string{"welcome", "farewell"} {
 		upload("/api/"+cue, "cue.ogg", "OggS"+cue, http.StatusNoContent)
 	}
-	for _, expectedLikes := range []int{1, 0, 1} {
-		response := request(http.MethodPost, avatar.URL+"/like", strings.NewReader(`{"voter":"same-browser"}`), "application/json", http.StatusOK)
-		var result struct {
-			Likes int `json:"likes"`
-		}
-		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-			t.Fatal(err)
-		}
-		if result.Likes != expectedLikes {
-			t.Fatalf("likes: got %d, want %d", result.Likes, expectedLikes)
-		}
-	}
 	request(http.MethodDelete, "/api/rooms/ward-a", nil, "", http.StatusNoContent)
 	if rooms := rs.db.roomNames(); rooms["ward-a"] != 0 || rooms["ward-b"] == 0 {
 		t.Fatalf("unexpected room registry: %v", rooms)
@@ -115,8 +103,8 @@ func TestGlobalMediaSurvivesRoomClosure(t *testing.T) {
 	if err := json.Unmarshal(request(http.MethodGet, "/api/avatars", nil, "", http.StatusOK).Body.Bytes(), &avatars); err != nil {
 		t.Fatal(err)
 	}
-	if len(avatars) != 1 || avatars[0].Likes != 1 {
-		t.Fatalf("shared portraits/likes lost: %v", avatars)
+	if len(avatars) != 1 || avatars[0].ID != avatar.ID {
+		t.Fatalf("shared portrait lost: %v", avatars)
 	}
 	var sounds []soundMeta
 	if err := json.Unmarshal(request(http.MethodGet, "/api/sounds", nil, "", http.StatusOK).Body.Bytes(), &sounds); err != nil {
@@ -133,17 +121,13 @@ func TestGlobalMediaSurvivesRoomClosure(t *testing.T) {
 	rs.votes.execute("avatar", "ward-b", avatar.ID)
 	request(http.MethodGet, sound.URL, nil, "", http.StatusNotFound)
 	request(http.MethodGet, avatar.URL, nil, "", http.StatusNotFound)
-	var likes int
-	if err := rs.db.db.QueryRow(`SELECT count(*) FROM avatar_likes`).Scan(&likes); err != nil || likes != 0 {
-		t.Fatalf("deleted portrait left likes: %d, %v", likes, err)
-	}
 	request(http.MethodDelete, "/api/welcome", nil, "", http.StatusNoContent)
 	request(http.MethodGet, "/api/welcome", nil, "", http.StatusNotFound)
 	request(http.MethodGet, "/api/farewell", nil, "", http.StatusOK)
 }
 
 func TestLegacyMediaSchemaRequiresManualMigration(t *testing.T) {
-	for _, table := range []string{"sounds", "avatars", "avatar_likes", "cues"} {
+	for _, table := range []string{"sounds", "avatars", "cues"} {
 		t.Run(table, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "meetler.db")
 			db, err := sql.Open("sqlite", path)

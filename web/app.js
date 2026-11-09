@@ -257,7 +257,7 @@ function ensureTile(participant) {
   makeDiagnosisLabel(label, participant.name || participant.identity, participant.identity);
   const ph = document.createElement('div');
   ph.className = 'ph'; // фон = аватарка (из пула или дефолтная из CSS)
-  const u = avatarUrlFor(participant.sid);
+  const u = avatarUrlFor(participant);
   if (u) ph.style.backgroundImage = `url(${u})`;
   el.appendChild(ph);
   el.appendChild(label);
@@ -498,7 +498,7 @@ function wireRoomEvents(r) {
   ]) {
     on(event, (participant) => {
       updateTile(participant);
-      recomputeAvatars();
+      refreshTileAvatars();
       playCue();
     });
   }
@@ -638,7 +638,7 @@ function ensureLocalTile() {
   makeDiagnosisLabel(label, `${myName} (вы)`, room.localParticipant.identity);
   const ph = document.createElement('div');
   ph.className = 'ph';
-  const u = avatarUrlFor(room.localParticipant.sid);
+  const u = avatarUrlFor(room.localParticipant);
   if (u) ph.style.backgroundImage = `url(${u})`;
   el.appendChild(ph);
   el.appendChild(label);
@@ -1158,63 +1158,36 @@ async function switchRoom(newRoom, rejoin = false) {
   }
 }
 
-// --- общий пул аватарок: случайная картинка каждому участнику ---
-// Аватарка = детерминированный хеш sid по СТАБИЛЬНОМУ списку с сервера
-// (list отсортирован по id). Все зрители вычисляют одинаковую картинку —
-// никакой синхронизации не нужно. Список пуст → дефолтный /avatar.jpg.
-// Портреты и лайки общие для всех палат.
-let avatarList = []; // [{id, url, likes}] общий пул
-
+// --- общая галерея портретов ---
+// Все клиенты выбирают по identity из одинакового списка: дефолты + загрузки по id.
+const DEFAULT_AVATARS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `/dav/${n}.png`);
+let avatarPool = DEFAULT_AVATARS;
 async function refreshAvatars() {
   const rm = currentRoom();
   const box = $('avatarThumbs');
   const uploadButton = $('avatarUploadBtn');
   if (!rm) {
-    avatarList = [];
+    avatarPool = DEFAULT_AVATARS;
     if (box) box.replaceChildren(uploadButton);
     document.querySelectorAll('.tile .ph').forEach((ph) => { ph.style.backgroundImage = ''; });
     return;
   }
   try {
     const res = await fetch('/api/avatars');
+    if (!res.ok) throw new Error('Не удалось загрузить портреты');
     const avatars = (await res.json()) || [];
-    avatarList = avatars;
-    // пул изменился — пересчитать назначение без повторов и перекрасить тайлы
-    recomputeAvatars();
+    avatarPool = [...DEFAULT_AVATARS, ...avatars.map((a) => a.url)];
+    refreshTileAvatars();
     if (box) {
       box.replaceChildren(uploadButton);
       for (const a of avatars) {
         const th = document.createElement('div');
-        th.className = 'thumb rar' + rarityForId(a.id); // палитра раритетности
-        th.title = ['обычный', 'необычный', 'редкий', 'эпический', 'легендарный'][rarityForId(a.id)];
+        th.className = 'thumb';
         const img = document.createElement('img');
         img.src = a.url;
         img.alt = a.id;
         img.loading = 'lazy';
         th.appendChild(img);
-        // лайк: чем больше лайков — тем реже портрет выдаётся. Тоггл по клику.
-        const like = createButton('♥ ' + (a.likes || 0), {
-          className: 'icon-button icon-button--small like',
-          title: 'Лайк (чем больше — тем реже выпадает)',
-        });
-        like.onclick = async (e) => {
-          e.stopPropagation();
-          try {
-            const res = await fetch('/api/avatars/' + encodeURIComponent(a.id) + '/like', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ voter: clientId() }),
-            });
-            if (!res.ok) throw new Error((await res.text()) || res.status);
-            const j = await res.json();
-            like.textContent = '♥ ' + j.likes;
-            like.classList.toggle('liked', j.liked);
-            await refreshAvatars(); // пересчитать веса/раритет (пул изменился)
-          } catch (err) {
-            const ae = $('avatarErr'); if (ae) ae.textContent = 'Лайк не удался: ' + (err.message || err);
-          }
-        };
-        th.appendChild(like);
         const del = createVoteButton({
           kind: 'avatar', target: a.id, roomName: rm, compact: true,
           errorId: 'avatarErr', onDone: refreshAvatars,
@@ -1234,98 +1207,23 @@ function strHash(s) {
   return Math.abs(h);
 }
 
-// дефолтный набор аватарок: базовый портрет (web/avatar.jpg), покрашенный в
-// разные цвета (web/dav/*.png). Работает из коробки. Порядок стабильный.
-const DEFAULT_AVATARS = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `/dav/${n}.png`);
-
-// Веса раздачи аватарок (детерминированно по hash(sid), одинаково у всех):
-//   - ЗАГРУЖЕННЫЕ портреты — ПРИОРИТЕТНЕЕ (высокий вес), выпадают часто;
-//   - дефолтные — fallback, низкий вес (нужны только пока галерея пустая).
-// Чем больше лайков — тем реже портрет выдаётся (эксклюзив).
-const DEFAULT_WEIGHT = 0.5; // дефолты теперь редкие — лишь бы было что показать
-const UPLOADED_BASE = 10;   // загруженные выпадают ЧАСТО
-// вес загруженного портрета: высокий базовый, слабо убывает по порядку (чтобы
-// старые не доминировали) и по лайкам (чем больше лайков — тем реже). likes≥0.
-function uploadedWeight(i, likes) { return UPLOADED_BASE / (1 + i * 0.15) / (1 + (likes || 0) * 0.5); }
-
-// buildAvatarPool: [{url, weight, rarity}] — дефолты + загруженные (по порядку id).
-function buildAvatarPool() {
-  const pool = DEFAULT_AVATARS.map((url) => ({ url, weight: DEFAULT_WEIGHT }));
-  avatarList.forEach((a, i) => pool.push({ url: a.url, weight: uploadedWeight(i, a.likes), id: a.id }));
-  const total = pool.reduce((s, e) => s + e.weight, 0);
-  for (const e of pool) e.rarity = rarityTier(e.weight / total);
-  return { pool, total };
-}
-
-// rarityTier: по вероятности выпадения → тир раритетности (ниже p = реже = выше тир)
-function rarityTier(p) {
-  if (p >= 0.10) return 0; // common
-  if (p >= 0.05) return 1; // uncommon
-  if (p >= 0.025) return 2; // rare
-  if (p >= 0.012) return 3; // epic
-  return 4;                 // legendary (самые редкие)
-}
-
-// --- СТАБИЛЬНАЯ аватарка на участника ---
-// Было: назначение считалось от ВСЕГО ростера (allSids) со splice-удалением
-//   занятых из пула + пересчёт на каждый connect/disconnect/like/timer. Любой
-//   вход/выход/лайк менял order → у УЖЕ сидящих аватарка переназначалась
-//   («перетасовка в случайные промежутки» = детерминированный пересчёт при
-//   каждом событии ростера/пула).
-// Стало: аватарка = чистая функция ТОЛЬКО от sid + стабильного пула (hash(sid)
-//   взвешенно по пулу). Ростер на выбор не влияет. Результат кэшируется per-sid
-//   и НЕ переназначается, пока у sid остаётся валидная (ещё существующая в пуле)
-//   картинка. Trade-off: при малом пуле двое могут получить одну картинку —
-//   это приемлемо против постоянной перетасовки.
-let avatarAssign = new Map(); // sid -> url (стабильный кэш)
-
-// взвешенный выбор индекса среди arr по доле хеша sid
-function weightedPickIndex(arr, sid) {
-  const total = arr.reduce((s, e) => s + e.weight, 0);
-  let x = (strHash(sid) % 100000) / 100000 * total;
-  for (let i = 0; i < arr.length; i++) {
-    x -= arr[i].weight;
-    if (x < 0) return i;
-  }
-  return arr.length - 1;
-}
-
-// recomputeAvatars: НЕ трогает уже назначенные sid, пока их картинка жива в
-// пуле. Переназначает только тех, у кого картинка исчезла (портрет удалили).
-// Вход/выход других участников больше НЕ вызывает перетасовку.
-function recomputeAvatars() {
-  const { pool } = buildAvatarPool();
-  const urls = new Set(pool.map((e) => e.url));
-  // выкинуть из кэша только протухшие назначения (картинку удалили из палаты)
-  for (const [sid, url] of avatarAssign) {
-    if (!urls.has(url)) avatarAssign.delete(sid);
-  }
+function refreshTileAvatars() {
   document.querySelectorAll('.tile .ph').forEach(applyAvatarToPh);
 }
 
-function avatarUrlFor(sid) {
-  const cached = avatarAssign.get(sid);
-  if (cached) return cached;
-  const { pool } = buildAvatarPool();
-  if (!pool.length) return null;
-  // детерминированный взвешенный выбор строго по sid — не зависит от ростера
-  const url = pool[weightedPickIndex(pool, sid)].url;
-  avatarAssign.set(sid, url);
-  return url;
-}
-
-// rarityForId: тир раритетности загруженного портрета (для палитры в галерее)
-function rarityForId(id) {
-  const { pool } = buildAvatarPool();
-  const e = pool.find((x) => x.id === id);
-  return e ? e.rarity : 0;
+function avatarUrlFor(participant) {
+  if (!participant?.identity) return '/avatar.jpg';
+  return avatarPool[strHash(participant.identity) % avatarPool.length];
 }
 
 function applyAvatarToPh(ph) {
   const tile = ph.closest('.tile');
   const sid = tile && tile.dataset.sid;
   if (!sid) return;
-  const u = avatarUrlFor(sid);
+  if (!room) return;
+  const participant = room.localParticipant.sid === sid ? room.localParticipant :
+    [...room.remoteParticipants.values()].find((p) => p.sid === sid);
+  const u = avatarUrlFor(participant);
   // Пока портрет загружается, остаётся однотонный фон.
   ph.style.backgroundImage = u ? `url(${u})` : '';
 }

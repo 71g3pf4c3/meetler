@@ -2,7 +2,7 @@ package main
 
 // SQLite-хранилище общего контента: звуковая аптечка, галерея портретов,
 // джинглы welcome/farewell. Заменило файловое хранилище с sidecar-файлами
-// (.meta/.likes) и отдельными файлами джинглов: одна БД, атомарные CRUD,
+// (.meta) и отдельными файлами джинглов: одна БД, атомарные CRUD,
 // бэкап = копия файла (или VACUUM INTO).
 //
 // Блобы живут в БД: лимиты загрузок малы (2 MiB звук, 4 MiB аватар),
@@ -37,11 +37,6 @@ CREATE TABLE IF NOT EXISTS avatars (
 	data       BLOB NOT NULL,
 	created_at INTEGER NOT NULL,
 	PRIMARY KEY (id)
-);
-CREATE TABLE IF NOT EXISTS avatar_likes (
-	avatar  TEXT NOT NULL,
-	voter   TEXT NOT NULL, -- анонимный client-id браузера (дедуп лайков)
-	PRIMARY KEY (avatar, voter)
 );
 CREATE TABLE IF NOT EXISTS cues (
 	kind       TEXT NOT NULL, -- welcome | farewell
@@ -79,7 +74,6 @@ func openRoomDB(path string) (*roomDB, error) {
 	if err := db.QueryRow(`SELECT count(*) FROM (
 		SELECT name FROM pragma_table_info('sounds') UNION ALL
 		SELECT name FROM pragma_table_info('avatars') UNION ALL
-		SELECT name FROM pragma_table_info('avatar_likes') UNION ALL
 		SELECT name FROM pragma_table_info('cues')
 	) WHERE name='room'`).Scan(&legacyColumns); err != nil {
 		_ = db.Close()
@@ -160,12 +154,9 @@ func (r *roomDB) avatarPut(id, ext string, data []byte) error {
 	return err
 }
 
-// avatarList: порядок стабилен по id — от него зависит детерминированный
-// выбор аватарки хешем на клиентах (менять нельзя).
+// avatarList возвращает общий список портретов по id.
 func (r *roomDB) avatarList() []avatarMeta {
-	rows, err := r.db.Query(`SELECT a.id, count(l.voter) FROM avatars a
-		LEFT JOIN avatar_likes l ON l.avatar=a.id
-		GROUP BY a.id ORDER BY a.id`)
+	rows, err := r.db.Query(`SELECT id FROM avatars ORDER BY id`)
 	if err != nil {
 		return nil
 	}
@@ -173,7 +164,7 @@ func (r *roomDB) avatarList() []avatarMeta {
 	out := make([]avatarMeta, 0, 8)
 	for rows.Next() {
 		var m avatarMeta
-		if err := rows.Scan(&m.ID, &m.Likes); err != nil {
+		if err := rows.Scan(&m.ID); err != nil {
 			continue
 		}
 		m.URL = avatarURL(m.ID)
@@ -194,26 +185,8 @@ func (r *roomDB) avatarGet(id string) (string, []byte, time.Time, bool) {
 	return ext, data, time.Unix(at, 0), true
 }
 
-// avatarLikeToggle переключает лайк voter и возвращает новое состояние.
-func (r *roomDB) avatarLikeToggle(id, voter string) (likes int, liked bool, ok bool) {
-	if _, err := r.db.Exec(`INSERT INTO avatar_likes (avatar, voter) VALUES (?,?)`, id, voter); err == nil {
-		liked = true
-	} else {
-		if _, err := r.db.Exec(`DELETE FROM avatar_likes WHERE avatar=? AND voter=?`, id, voter); err != nil {
-			return 0, false, false
-		}
-	}
-	if err := r.db.QueryRow(`SELECT count(*) FROM avatar_likes WHERE avatar=?`, id).Scan(&likes); err != nil {
-		return 0, false, false
-	}
-	return likes, liked, true
-}
-
-// avatarDelete идемпотентна; лайки сносятся каскадно.
+// avatarDelete идемпотентна: нет записи — не ошибка.
 func (r *roomDB) avatarDelete(id string) error {
-	if _, err := r.db.Exec(`DELETE FROM avatar_likes WHERE avatar=?`, id); err != nil {
-		return err
-	}
 	_, err := r.db.Exec(`DELETE FROM avatars WHERE id=?`, id)
 	return err
 }
