@@ -1,7 +1,7 @@
 package main
 
-// Реестр палат в ROOMS_DIR и маршруты /api/rooms.
-// Список объединяет каталоги палат и активные комнаты LiveKit.
+// Реестр палат в SQLite и маршруты /api/rooms.
+// Список объединяет реестр и активные комнаты LiveKit.
 
 import (
 	"context"
@@ -79,14 +79,12 @@ func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL, protectedCSV st
 		tgbridgeURL: tgbridgeURL,
 		protected:   parseProtectedRooms(protectedCSV),
 	}
-	// SQLite-хранилище: звуки/портреты/джинглы + миграция со старой файловой
-	// структуры (ROOMS_DIR/<room>/{sounds,avatars}, джинглы в корне палаты).
+	// SQLite: общие звуки/портреты/джинглы и реестр палат.
 	db, err := openRoomDB(filepath.Join(root, "meetler.db"))
 	if err != nil {
 		log.Printf("ERROR: open db в %q: %v — хранилище отключено", root, err)
 		return rs
 	}
-	db.migrateFromFS(root)
 	rs.db = db
 	rs.sb = &soundboard{db: db}
 	rs.av = &avatarStore{db: db}
@@ -99,8 +97,6 @@ func newRoomService(lkURL, apiKey, apiSecret, root, tgbridgeURL, protectedCSV st
 
 // dirWritable больше не используется (проверку записи делает openRoomDB):
 // оставлена проверка доступности root в newRoomService через MkdirAll.
-
-func (rs *roomService) roomDir(room string) string { return filepath.Join(rs.root, room) }
 
 // ensureRoom регистрирует палату в реестре (БД). Best-effort: ошибка не
 // мешает входу — палата просто останется неперсистентной до следующей попытки.
@@ -218,9 +214,8 @@ func (rs *roomService) handleRooms(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteRoom: DELETE /api/rooms/<room> — закрыть палату.
-// Каскад: DeleteRoom выписывает всех участников (best-effort — если SFU
-// недоступен, в палате и так никого нет), RemoveAll сносит каталог палаты
-// со ВСЕМИ её звуками и портретами. Идемпотентно: несуществующая палата → 204.
+// DeleteRoom выписывает всех участников (best-effort). Общий медиаконтент
+// сохраняется. Идемпотентно: несуществующая палата → 204.
 // Тихие (protected) палаты закрыть нельзя.
 func (rs *roomService) deleteRoom(w http.ResponseWriter, _ *http.Request, room string) {
 	if rs.isProtected(room) {
@@ -232,9 +227,8 @@ func (rs *roomService) deleteRoom(w http.ResponseWriter, _ *http.Request, room s
 }
 
 // closeRoom: каскадное закрытие палаты (без http). DeleteRoom выписывает всех
-// (best-effort — если SFU недоступен, в палате и так никого нет), содержимое
-// палаты сносится из БД + каталог старого файлового хранилища (если остался
-// после миграции). Переиспользуется голосованием.
+// (best-effort), очищает игры и реестр. Переиспользуется голосованием.
+// Общий медиаконтент и старые файлы для ручной миграции сохраняются.
 func (rs *roomService) closeRoom(room string) {
 	if rs.youtube != nil {
 		rs.youtube.clearRoom(room)
@@ -248,21 +242,30 @@ func (rs *roomService) closeRoom(room string) {
 		log.Printf("DeleteRoom(%s): %v (удаляю из реестра в любом случае)", room, err)
 	}
 	if rs.db != nil {
-		rs.db.roomDeleteCascade(room)
 		rs.db.roomUnregister(room)
-	}
-	if err := os.RemoveAll(rs.roomDir(room)); err != nil {
-		log.Printf("closeRoom RemoveAll(%s): %v", room, err)
 	}
 }
 
-// handleRoomScoped: всё под /api/rooms/<room>/...
-//
-//	DELETE /api/rooms/<room>                     — закрыть палату (каскад)
-//	GET|POST  /api/rooms/<room>/sounds           — листинг/заливка звуков
-//	GET|DELETE /api/rooms/<room>/sounds/<id>     — отдать/удалить звук
-//	GET|POST  /api/rooms/<room>/avatars           — листинг/заливка портретов
-//	GET|DELETE /api/rooms/<room>/avatars/<id>     — отдать/удалить портрет
+// handleMedia routes global soundboard files, portraits, and entry/exit cues.
+func (rs *roomService) handleMedia(w http.ResponseWriter, r *http.Request) {
+	if !rs.ok {
+		http.Error(w, "media storage disabled", http.StatusServiceUnavailable)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
+	switch parts[0] {
+	case soundsSub:
+		rs.sb.dispatch(w, r, parts[1:])
+	case avatarsSub:
+		rs.av.dispatch(w, r, parts[1:])
+	case "welcome", "farewell":
+		rs.sb.cueDispatch(w, r, parts[0], parts[1:])
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// handleRoomScoped: room lifecycle, votes, games, and Telegram recordings.
 func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) {
 	if !rs.ok {
 		http.Error(w, "room storage disabled", http.StatusServiceUnavailable)
@@ -274,8 +277,7 @@ func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "bad room", http.StatusBadRequest)
 		return
 	}
-	// любое обращение к палате регистрирует её в реестре (как раньше —
-	// созданием каталога: залить звук можно и до первого входа)
+	// Любое обращение к палате регистрирует её в реестре.
 	rs.ensureRoom(parts[0])
 	room := parts[0]
 	if len(parts) == 1 {
@@ -287,14 +289,8 @@ func (rs *roomService) handleRoomScoped(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	switch parts[1] {
-	case soundsSub:
-		rs.sb.dispatch(w, r, room, parts[2:])
-	case avatarsSub:
-		rs.av.dispatch(w, r, room, parts[2:])
 	case "votes":
 		rs.votes.dispatch(w, r, room, parts[2:])
-	case "welcome", "farewell":
-		rs.sb.cueDispatch(w, r, room, parts[1], parts[2:])
 	case "tg-voice":
 		rs.handleTGVoice(w, r, room, parts[2:])
 	case "poker":

@@ -1,6 +1,6 @@
 package main
 
-// Звуковая аптечка палат: CRUD через roomDB (SQLite).
+// Общая звуковая аптечка: CRUD через roomDB (SQLite).
 
 import (
 	"bytes"
@@ -14,7 +14,7 @@ import (
 
 const (
 	maxSoundBytes = 2 << 20 // 2 MiB на файл — короткие семплы для soundboard
-	maxSounds     = 200     // потолок на палату (anti-flood)
+	maxSounds     = 200     // общий потолок (anti-flood)
 	soundsSub     = "sounds"
 )
 
@@ -25,11 +25,11 @@ type soundboard struct {
 type soundMeta struct {
 	ID    string `json:"id"`    // идентификатор в хранилище (rand + ext)
 	Label string `json:"label"` // отображаемое имя кнопки
-	URL   string `json:"url"`   // /api/rooms/<room>/sounds/<id>
+	URL   string `json:"url"`   // /api/sounds/<id>
 }
 
-func soundURL(room, id string) string {
-	return "/api/rooms/" + room + "/" + soundsSub + "/" + id
+func soundURL(id string) string {
+	return "/api/" + soundsSub + "/" + id
 }
 
 // разрешённые расширения -> content-type
@@ -46,10 +46,9 @@ var soundExt = map[string]string{
 // sanitizeLabel → общий sanitizeText (main.go): обрезка 32 + def "звук".
 func sanitizeLabel(s string) string { return sanitizeText(s, 32, "звук") }
 
-// GET /api/rooms/<room>/sounds -> список звуков палаты.
-// Несуществующая палата (её ещё никто не открывал) — пустой список, не ошибка.
-func (sb *soundboard) list(w http.ResponseWriter, _ *http.Request, room string) {
-	out := sb.db.soundList(room)
+// GET /api/sounds -> общий список звуков для всех палат.
+func (sb *soundboard) list(w http.ResponseWriter, _ *http.Request) {
+	out := sb.db.soundList()
 	if out == nil {
 		out = []soundMeta{}
 	}
@@ -76,12 +75,12 @@ func sniffAudio(head []byte, ext string) bool {
 	return false
 }
 
-// POST /api/rooms/<room>/sounds (multipart: file, label) -> загрузка.
+// POST /api/sounds (multipart: file, label) -> загрузка.
 // Открыто для всех, но:
 //   - размер <= maxSoundBytes
 //   - расширение из whitelist И magic bytes совпадают
-//   - потолок maxSounds файлов на палату (anti-flood)
-func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request, room string) {
+//   - потолок maxSounds файлов в общем пуле (anti-flood)
+func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSoundBytes+4096)
 	if err := r.ParseMultipartForm(maxSoundBytes); err != nil {
 		http.Error(w, "too large or bad form (max 2MiB)", http.StatusBadRequest)
@@ -114,7 +113,7 @@ func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request, room string
 		label = sanitizeLabel(strings.TrimSuffix(hdr.Filename, ext))
 	}
 
-	if sb.db.soundCount(room) >= maxSounds {
+	if sb.db.soundCount() >= maxSounds {
 		http.Error(w, "soundboard full (limit reached)", http.StatusConflict)
 		return
 	}
@@ -125,24 +124,24 @@ func (sb *soundboard) upload(w http.ResponseWriter, r *http.Request, room string
 		return
 	}
 	id := randHex() + ext
-	if err := sb.db.soundPut(room, id, ext, label, data); err != nil {
+	if err := sb.db.soundPut(id, ext, label, data); err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(soundMeta{ID: id, Label: label, URL: soundURL(room, id)})
+	_ = json.NewEncoder(w).Encode(soundMeta{ID: id, Label: label, URL: soundURL(id)})
 }
 
-// GET /api/rooms/<room>/sounds/<id> -> отдать звук.
-func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request, room, id string) {
+// GET /api/sounds/<id> -> отдать звук.
+func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request, id string) {
 	// защита от path traversal: только базовое имя, известное расширение
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	ext, _, data, at, ok := sb.db.soundGet(room, id)
+	ext, _, data, at, ok := sb.db.soundGet(id)
 	ct, known := soundExt[strings.ToLower(ext)]
 	if !ok || !known {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -151,38 +150,38 @@ func (sb *soundboard) serve(w http.ResponseWriter, r *http.Request, room, id str
 	serveBlob(w, r, id, ct, "public, max-age=31536000, immutable", data, at)
 }
 
-// DELETE /api/rooms/<room>/sounds/<id> -> удалить звук из аптечки палаты.
+// DELETE /api/sounds/<id> -> удалить звук из общей аптечки.
 // Без авторизации: что "лишнее" решает любой пациент (как в галерее портретов).
 // id — серверный рандом, не пользовательская строка.
-func (sb *soundboard) remove(w http.ResponseWriter, _ *http.Request, room, id string) {
+func (sb *soundboard) remove(w http.ResponseWriter, _ *http.Request, id string) {
 	if id == "" || id != filepath.Base(id) || soundExt[strings.ToLower(filepath.Ext(id))] == "" {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := sb.db.soundDelete(room, id); err != nil {
+	if err := sb.db.soundDelete(id); err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// delete удаляет звук палаты. Внутренний метод, переиспользуется голосованием
+// delete удаляет общий звук. Внутренний метод, переиспользуется голосованием
 // (votes.go). Нет записи → не ошибка (идемпотентно).
-func (sb *soundboard) delete(room, id string) error {
+func (sb *soundboard) delete(id string) error {
 	if id == "" || id != filepath.Base(id) || soundExt[strings.ToLower(filepath.Ext(id))] == "" {
 		return os.ErrInvalid
 	}
-	return sb.db.soundDelete(room, id)
+	return sb.db.soundDelete(id)
 }
 
-// dispatch роутит /api/rooms/<room>/sounds[/<id>] по методу.
-func (sb *soundboard) dispatch(w http.ResponseWriter, r *http.Request, room string, rest []string) {
+// dispatch роутит /api/sounds[/<id>] по методу.
+func (sb *soundboard) dispatch(w http.ResponseWriter, r *http.Request, rest []string) {
 	if len(rest) == 0 {
 		switch r.Method {
 		case http.MethodGet:
-			sb.list(w, r, room)
+			sb.list(w, r)
 		case http.MethodPost:
-			sb.upload(w, r, room)
+			sb.upload(w, r)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -192,9 +191,9 @@ func (sb *soundboard) dispatch(w http.ResponseWriter, r *http.Request, room stri
 		id := rest[0]
 		switch r.Method {
 		case http.MethodGet:
-			sb.serve(w, r, room, id)
+			sb.serve(w, r, id)
 		case http.MethodDelete:
-			sb.remove(w, r, room, id)
+			sb.remove(w, r, id)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

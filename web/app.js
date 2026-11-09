@@ -467,10 +467,9 @@ async function join(roomName = palataFromPath()) {
     setCallState('connected');
     poker.connect(roomName, name, room.localParticipant.identity);
     youtube.connect(roomName);
-    refreshCueControls();
     for (const [refresh, interval] of [
       [refreshSoundboard, 20000], [refreshAvatars, 30000],
-      [refreshWardNav, 30000], [refreshVotes, 4000],
+      [refreshWardNav, 30000], [refreshVotes, 4000], [refreshCueControls, 30000],
     ]) {
       refresh();
       roomTimers.push(setInterval(refresh, interval));
@@ -599,8 +598,8 @@ function broadcastSfxUpdate() {
   } catch (_) {}
 }
 
-async function hasCustomCue(roomName, kind) {
-  const res = await fetch(roomApi(roomName) + '/' + kind, {
+async function hasCustomCue(kind) {
+  const res = await fetch('/api/' + kind, {
     headers: { Range: 'bytes=0-0' }, cache: 'no-store',
   });
   if (res.body) res.body.cancel().catch(() => {});
@@ -616,8 +615,8 @@ async function playCue(kind, defaultUrl) {
   if (vol <= 0) return; // уважаем индивидуальный mute аптечки
   let url = defaultUrl;
   try {
-    const custom = roomApi(room.name) + '/' + kind;
-    if (await hasCustomCue(room.name, kind)) url = custom;
+    const custom = '/api/' + kind;
+    if (await hasCustomCue(kind)) url = custom;
   } catch (_) { /* нет кастома → дефолт */ }
   const a = new Audio(url);
   a.volume = vol;
@@ -852,7 +851,7 @@ async function triggerMine(s) {
   const sbErr = $('sbErr');
   if (sbErr) sbErr.textContent = '💥 мина: доигрался со спамом — выписка';
   try {
-    await fetch(roomApi(room.name) + '/sounds/' + encodeURIComponent(s.id), { method: 'DELETE' });
+    await fetch('/api/sounds/' + encodeURIComponent(s.id), { method: 'DELETE' });
     broadcastSfxUpdate();
   } catch (_) {}
   burst.delete(s.id);
@@ -935,12 +934,12 @@ function sbVolume() {
   });
 })();
 
-// --- панель soundboard: список кнопок с сервера + загрузка (всё в ЭТОЙ палате) ---
+// --- панель soundboard: общий список кнопок с сервера + загрузка для всех палат ---
 async function refreshSoundboard() {
   const box = $('sbBtns');
   if (!box || !room) return;
   try {
-    const res = await fetch(roomApi(room.name) + '/sounds');
+    const res = await fetch('/api/sounds');
     // пустой список приходит как JSON null (Go nil slice)
     const sounds = (await res.json()) || [];
     box.innerHTML = '';
@@ -986,7 +985,7 @@ async function uploadSound(file, label) {
   const fd = new FormData();
   fd.append('file', file);
   if (label) fd.append('label', label);
-  const res = await fetch(roomApi(room.name) + '/sounds', { method: 'POST', body: fd });
+  const res = await fetch('/api/sounds', { method: 'POST', body: fd });
   if (!res.ok) throw new Error((await res.text()) || res.status);
 }
 
@@ -1166,12 +1165,12 @@ async function switchRoom(newRoom, rejoin = false) {
   }
 }
 
-// --- пул аватарок ПАЛАТЫ: случайная картинка каждому участнику ---
+// --- общий пул аватарок: случайная картинка каждому участнику ---
 // Аватарка = детерминированный хеш sid по СТАБИЛЬНОМУ списку с сервера
 // (list отсортирован по id). Все зрители вычисляют одинаковую картинку —
 // никакой синхронизации не нужно. Список пуст → дефолтный /avatar.jpg.
-// Портреты у каждой палаты СВОИ (иерархия: палата → галерея).
-let avatarList = []; // [{id, url}] текущей палаты
+// Портреты и лайки общие для всех палат.
+let avatarList = []; // [{id, url, likes}] общий пул
 
 async function refreshAvatars() {
   const rm = currentRoom();
@@ -1184,7 +1183,7 @@ async function refreshAvatars() {
     return;
   }
   try {
-    const res = await fetch(roomApi(rm) + '/avatars');
+    const res = await fetch('/api/avatars');
     const avatars = (await res.json()) || [];
     avatarList = avatars;
     // пул изменился — пересчитать назначение без повторов и перекрасить тайлы
@@ -1208,7 +1207,7 @@ async function refreshAvatars() {
         like.onclick = async (e) => {
           e.stopPropagation();
           try {
-            const res = await fetch(roomApi(rm) + '/avatars/' + encodeURIComponent(a.id) + '/like', {
+            const res = await fetch('/api/avatars/' + encodeURIComponent(a.id) + '/like', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ voter: clientId() }),
@@ -1338,7 +1337,7 @@ function applyAvatarToPh(ph) {
   ph.style.backgroundImage = u ? `url(${u})` : '';
 }
 
-// загрузка портрета (как звуки: скрытый input за кнопкой) — в текущую палату
+// загрузка портрета (как звуки: скрытый input за кнопкой) — в общий пул
 $('avatarUploadBtn').onclick = () => $('avatarFile').click();
 $('avatarFile').onchange = async () => {
   const f = $('avatarFile').files[0];
@@ -1348,7 +1347,7 @@ $('avatarFile').onchange = async () => {
   if (!f) return;
   try {
     const rm = currentRoom();
-    if (!rm) throw new Error('сначала укажи палату — портреты у каждой свои');
+    if (!rm) throw new Error('сначала войди в палату');
     if (f.size > 4 * 1024 * 1024) throw new Error('больше 4 МБ — не влезет');
     // GIF (и анимированный webp) НЕ прогоняем через canvas: toBlob берёт один
     // кадр и убивает анимацию. Такие льём как есть (размер уже проверен ≤4 МБ).
@@ -1365,7 +1364,7 @@ $('avatarFile').onchange = async () => {
     }
     const fd = new FormData();
     fd.append('file', blob, 'avatar.' + ext);
-    const res = await fetch(roomApi(rm) + '/avatars', { method: 'POST', body: fd });
+    const res = await fetch('/api/avatars', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.text()) || res.status);
     await refreshAvatars();
   } catch (e) {
@@ -1421,9 +1420,9 @@ async function compressImage(file, maxDim, quality) {
   }
 }
 
-// галерея портретов живёт в палате (not на главной): обновляется из join()
+// Общая галерея показывается во время звонка: обновляется из join()
 
-// Одна строка управления для обоих джинглов палаты.
+// Одна строка управления для каждого общего джингла.
 function createCueControl(kind, label) {
   const container = document.createElement('div');
   const row = document.createElement('div');
@@ -1462,7 +1461,7 @@ function createCueControl(kind, label) {
     error.textContent = '';
     if (!activeRoom) return;
     try {
-      const custom = await hasCustomCue(activeRoom.name, kind);
+      const custom = await hasCustomCue(kind);
       if (room !== activeRoom || revision !== currentRevision) return;
       reset.hidden = !custom;
     } catch (err) {
@@ -1484,7 +1483,7 @@ function createCueControl(kind, label) {
         body = new FormData();
         body.append('file', selectedFile);
       }
-      const res = await fetch(roomApi(activeRoom.name) + '/' + kind, { method, body });
+      const res = await fetch('/api/' + kind, { method, body });
       if (!res.ok) throw new Error((await res.text()) || res.status);
       if (room !== activeRoom) return;
       reset.hidden = method === 'DELETE';

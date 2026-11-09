@@ -32,11 +32,11 @@ func (a *app) saveToSoundboard(ctx context.Context, palata, fileID, label string
 	if err != nil {
 		return fmt.Errorf("transcode: %w", err)
 	}
-	return a.uploadSound(ctx, palata, ogg, label)
+	return a.uploadSound(ctx, ogg, label)
 }
 
 // uploadSound postит ogg-файл в api как multipart (file + label).
-func (a *app) uploadSound(ctx context.Context, palata, oggPath, label string) error {
+func (a *app) uploadSound(ctx context.Context, oggPath, label string) error {
 	f, err := os.Open(oggPath)
 	if err != nil {
 		return err
@@ -61,7 +61,7 @@ func (a *app) uploadSound(ctx context.Context, palata, oggPath, label string) er
 		return err
 	}
 
-	url := a.soundsvcURL + "/api/rooms/" + palata + "/sounds"
+	url := a.soundsvcURL + "/api/sounds"
 	c, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(c, http.MethodPost, url, &buf)

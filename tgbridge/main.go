@@ -306,7 +306,7 @@ func main() {
 			{Command: "palata", Description: "Показать или задать палату: /palata 6"},
 			{Command: "tts", Description: "Озвучить текст или реплай: /tts привет"},
 			{Command: "tovoice", Description: "В реплае на медиа: проиграть его в палате"},
-			{Command: "soundboardsave", Description: "В реплае на медиа: сохранить в аптечку палаты"},
+			{Command: "soundboardsave", Description: "В реплае на медиа: сохранить в общую аптечку"},
 		},
 	})
 
@@ -479,13 +479,13 @@ func replyMediaFileID(rt *telego.Message) (fileID string, dur int, isVideo bool,
 
 // cmdSoundboardSave: /soundboardsave в РЕПЛАЕ на сообщение с аудио/видео/
 // голосовым — скачиваем, транскодим в ogg/opus (режется до maxPlaySec) и
-// заливаем в звуковую аптечку палаты (api POST /sounds). Label — подпись
+// заливаем в общую звуковую аптечку (api POST /sounds). Label — подпись
 // команды (/soundboardsave моё имя) либо имя файла.
 func (a *app) cmdSoundboardSave(ctx context.Context, m *telego.Message, arg, palata string) {
 	fileID, _, _, fname := replyMediaFileID(m.ReplyToMessage)
 	if fileID == "" {
 		a.reply(ctx, m.Chat.ID,
-			"Ответь /soundboardsave на сообщение с голосовым/аудио/видео/музыкой — сохраню в аптечку палаты "+palata+".")
+			"Ответь /soundboardsave на сообщение с голосовым/аудио/видео/музыкой — сохраню в общую аптечку.")
 		return
 	}
 	if a.soundsvcURL == "" {
@@ -507,7 +507,7 @@ func (a *app) cmdSoundboardSave(ctx context.Context, m *telego.Message, arg, pal
 		a.reply(ctx, m.Chat.ID, "Не удалось сохранить: "+err.Error())
 		return
 	}
-	a.reply(ctx, m.Chat.ID, "✓ сохранено в аптечку палаты "+palata+" как «"+label+"»")
+	a.reply(ctx, m.Chat.ID, "✓ сохранено в общую аптечку как «"+label+"»")
 }
 
 // cmdToVoice: /tovoice в РЕПЛАЕ на сообщение с медиа (голосовое/аудио/видео/

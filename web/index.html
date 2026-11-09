@@ -755,10 +755,10 @@
         </div>
         <div id="grid"></div>
 
-        <!-- soundboard: ЗВУКИ ЭТОЙ ПАЛАТЫ, любой пациент может залить -->
+        <!-- soundboard: ОБЩИЕ ЗВУКИ, любой пациент может залить -->
         <details class="post" id="soundboard" open>
           <summary>
-            <span>Звуковая аптечка палаты</span>
+            <span>Общая звуковая аптечка</span>
             <label id="sbVolRow" for="sbVol" title="Громкость у себя">
               <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                 <path d="M11 5 6 9H3v6h3l5 4V5Z" fill="currentColor" />
@@ -844,9 +844,9 @@
           </div>
         </details>
 
-        <!-- галерея портретов ПАЛАТЫ: каждому пациенту случайный; удаление по 3 голосам -->
+        <!-- общая галерея портретов: каждому пациенту случайный; удаление по 3 голосам -->
         <details class="post" id="avatars" open>
-          <summary>Галерея портретов палаты</summary>
+          <summary>Общая галерея портретов</summary>
           <div class="body">
             <input type="file" id="avatarFile" hidden accept="image/*" />
             <div id="avatarThumbs">
@@ -857,7 +857,7 @@
         </details>
 
         <details class="post" id="roomCues">
-          <summary>Звуки входа и выхода</summary>
+          <summary>Общие звуки входа и выхода</summary>
           <div class="body" id="cueRows"></div>
         </details>
       </div>

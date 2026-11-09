@@ -1,6 +1,6 @@
 package main
 
-// Портреты палат: CRUD через roomDB (SQLite).
+// Общие портреты: CRUD через roomDB (SQLite).
 
 import (
 	"encoding/json"
@@ -13,7 +13,7 @@ import (
 
 const (
 	maxAvatarBytes = 4 << 20 // 4 MiB на картинку (фото с телефона)
-	maxAvatars     = 200     // потолок на палату (anti-flood)
+	maxAvatars     = 200     // общий потолок (anti-flood)
 	avatarsSub     = "avatars"
 )
 
@@ -23,27 +23,27 @@ type avatarStore struct {
 
 type avatarMeta struct {
 	ID    string `json:"id"`
-	URL   string `json:"url"`   // /api/rooms/<room>/avatars/<id>
+	URL   string `json:"url"`   // /api/avatars/<id>
 	Likes int    `json:"likes"` // число лайков (чем больше — тем реже выдаётся)
 }
 
-func avatarURL(room, id string) string {
-	return "/api/rooms/" + room + "/" + avatarsSub + "/" + id
+func avatarURL(id string) string {
+	return "/api/" + avatarsSub + "/" + id
 }
 
-// GET /api/rooms/<room>/avatars -> список портретов палаты.
+// GET /api/avatars -> общий список портретов для всех палат.
 // ПОРЯДОК СТАБИЛЕН (сортировка по id) — от него зависит детерминированный
-// выбор аватарки хешем на клиентах. Несуществующая палата — пустой список.
-func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request, room string) {
+// выбор аватарки хешем на клиентах.
+func (as *avatarStore) list(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(as.db.avatarList(room))
+	_ = json.NewEncoder(w).Encode(as.db.avatarList())
 }
 
-// POST /api/rooms/<room>/avatars (multipart: file) -> загрузка. Открыто для
+// POST /api/avatars (multipart: file) -> загрузка. Открыто для
 // всех, но:
 //   - размер <= maxAvatarBytes
-//   - потолок maxAvatars файлов на палату
-func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room string) {
+//   - потолок maxAvatars файлов в общем пуле
+func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAvatarBytes+4096)
 	if err := r.ParseMultipartForm(maxAvatarBytes); err != nil {
 		http.Error(w, "too large or bad form (max 4MiB)", http.StatusBadRequest)
@@ -58,7 +58,7 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room strin
 
 	ext := strings.ToLower(filepath.Ext(hdr.Filename))
 
-	if as.db.avatarCount(room) >= maxAvatars {
+	if as.db.avatarCount() >= maxAvatars {
 		http.Error(w, "avatar pool full (limit reached)", http.StatusConflict)
 		return
 	}
@@ -68,23 +68,23 @@ func (as *avatarStore) upload(w http.ResponseWriter, r *http.Request, room strin
 		return
 	}
 	id := randHex() + ext
-	if err := as.db.avatarPut(room, id, ext, data); err != nil {
+	if err := as.db.avatarPut(id, ext, data); err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(avatarMeta{ID: id, URL: avatarURL(room, id)})
+	_ = json.NewEncoder(w).Encode(avatarMeta{ID: id, URL: avatarURL(id)})
 }
 
-// GET /api/rooms/<room>/avatars/<id> -> отдать картинку.
-func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request, room, id string) {
+// GET /api/avatars/<id> -> отдать картинку.
+func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request, id string) {
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	_, data, at, ok := as.db.avatarGet(room, id)
+	_, data, at, ok := as.db.avatarGet(id)
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -92,33 +92,33 @@ func (as *avatarStore) serve(w http.ResponseWriter, r *http.Request, room, id st
 	serveBlob(w, r, id, http.DetectContentType(data), "public, max-age=31536000, immutable", data, at)
 }
 
-// DELETE /api/rooms/<room>/avatars/<id> -> убрать картинку из галереи палаты.
+// DELETE /api/avatars/<id> -> убрать картинку из общей галереи.
 // Намеренно без авторизации: что "лишнее" решает любой пациент.
 // (id — серверный рандом, не пользовательская строка: безопасно)
-func (as *avatarStore) remove(w http.ResponseWriter, _ *http.Request, room, id string) {
+func (as *avatarStore) remove(w http.ResponseWriter, _ *http.Request, id string) {
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	if err := as.db.avatarDelete(room, id); err != nil {
+	if err := as.db.avatarDelete(id); err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// delete удаляет портрет палаты (+лайки). Внутренний метод, переиспользуется
+// delete удаляет общий портрет (+лайки). Внутренний метод, переиспользуется
 // голосованием (votes.go). Нет записи → не ошибка (идемпотентно).
-func (as *avatarStore) delete(room, id string) error {
+func (as *avatarStore) delete(id string) error {
 	if id == "" || id != filepath.Base(id) {
 		return os.ErrInvalid
 	}
-	return as.db.avatarDelete(room, id)
+	return as.db.avatarDelete(id)
 }
 
-// POST /api/rooms/<room>/avatars/<id>/like {voter} -> переключить лайк.
+// POST /api/avatars/<id>/like {voter} -> переключить лайк.
 // Возвращает {likes, liked}. Дедуп по voter (анонимный client-id браузера).
-func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, room, id string) {
+func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, id string) {
 	if id == "" || id != filepath.Base(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
@@ -135,7 +135,7 @@ func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, room, id str
 		http.Error(w, "bad voter", http.StatusBadRequest)
 		return
 	}
-	likes, liked, ok := as.db.avatarLikeToggle(room, id, voter)
+	likes, liked, ok := as.db.avatarLikeToggle(id, voter)
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -145,14 +145,14 @@ func (as *avatarStore) like(w http.ResponseWriter, r *http.Request, room, id str
 	_ = json.NewEncoder(w).Encode(map[string]any{"likes": likes, "liked": liked})
 }
 
-// dispatch роутит /api/rooms/<room>/avatars[/<id>[/like]] по методу.
-func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, room string, rest []string) {
+// dispatch роутит /api/avatars[/<id>[/like]] по методу.
+func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, rest []string) {
 	if len(rest) == 0 {
 		switch r.Method {
 		case http.MethodGet:
-			as.list(w, r, room)
+			as.list(w, r)
 		case http.MethodPost:
-			as.upload(w, r, room)
+			as.upload(w, r)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -162,9 +162,9 @@ func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, room str
 		id := rest[0]
 		switch r.Method {
 		case http.MethodGet:
-			as.serve(w, r, room, id)
+			as.serve(w, r, id)
 		case http.MethodDelete:
-			as.remove(w, r, room, id)
+			as.remove(w, r, id)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -175,7 +175,7 @@ func (as *avatarStore) dispatch(w http.ResponseWriter, r *http.Request, room str
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		as.like(w, r, room, rest[0])
+		as.like(w, r, rest[0])
 		return
 	}
 	http.Error(w, "not found", http.StatusNotFound)

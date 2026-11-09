@@ -3,7 +3,9 @@ info:
   title: Meetler API
   version: 0.1.0
   description: |
-    Rooms, media, and voting.
+    Rooms, global media, and voting.
+    Sounds, portraits, likes, and greeting/goodbye cues are shared across rooms.
+    Room-scoped media routes are no longer supported; old data requires manual migration.
 
     When APP_PASSWORD is configured, /api/* requires the meetler_auth cookie,
     except /api/auth. With an empty APP_PASSWORD, authentication is disabled.
@@ -177,9 +179,9 @@ paths:
     delete:
       operationId: deleteRoom
       tags: [Rooms]
-      summary: Close a room and delete its stored media
+      summary: Close a room
       description: |
-        Disconnects participants and removes sounds, portraits, likes, and cues.
+        Disconnects participants and clears room games. Shared media is preserved.
         Idempotent for missing rooms.
       responses:
         '204':
@@ -192,9 +194,7 @@ paths:
           $ref: '#/components/responses/ProtectedRoom'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /api/rooms/{room}/sounds:
-    parameters:
-      - $ref: '#/components/parameters/Room'
+  /api/sounds:
     get:
       operationId: listSounds
       tags: [Sounds]
@@ -222,7 +222,7 @@ paths:
       description: |
         Accepts .mp3, .ogg, .oga, .wav, .m4a, .webm, or .opus filenames,
         case-insensitively. File limit is 2 MiB; multipart body limit is
-        2 MiB + 4096 bytes. Up to 200 sounds per room.
+        2 MiB + 4096 bytes. Up to 200 sounds globally.
       requestBody:
         required: true
         content:
@@ -254,9 +254,8 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /api/rooms/{room}/sounds/{id}:
+  /api/sounds/{id}:
     parameters:
-      - $ref: '#/components/parameters/Room'
       - $ref: '#/components/parameters/MediaID'
     get:
       operationId: getSound
@@ -299,17 +298,15 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /api/rooms/{room}/avatars:
-    parameters:
-      - $ref: '#/components/parameters/Room'
+  /api/avatars:
     get:
       operationId: listAvatars
       tags: [Avatars]
-      summary: List room portraits and like counts
+      summary: List shared portraits and like counts
       description: Sorted by ID.
       responses:
         '200':
-          description: Room portraits.
+          description: Shared portraits.
           content:
             application/json:
               schema:
@@ -326,10 +323,10 @@ paths:
     post:
       operationId: uploadAvatar
       tags: [Avatars]
-      summary: Upload a room portrait
+      summary: Upload a shared portrait
       description: |
         File limit is 4 MiB; multipart body limit is 4 MiB + 4096 bytes.
-        Up to 200 portraits per room.
+        Up to 200 portraits globally.
       requestBody:
         $ref: '#/components/requestBodies/FileUpload'
       responses:
@@ -349,14 +346,13 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /api/rooms/{room}/avatars/{id}:
+  /api/avatars/{id}:
     parameters:
-      - $ref: '#/components/parameters/Room'
       - $ref: '#/components/parameters/MediaID'
     get:
       operationId: getAvatar
       tags: [Avatars]
-      summary: Download a room portrait
+      summary: Download a shared portrait
       parameters:
         - $ref: '#/components/parameters/Range'
         - $ref: '#/components/parameters/IfNoneMatch'
@@ -394,15 +390,14 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /api/rooms/{room}/avatars/{id}/like:
+  /api/avatars/{id}/like:
     parameters:
-      - $ref: '#/components/parameters/Room'
       - $ref: '#/components/parameters/MediaID'
     post:
       operationId: toggleAvatarLike
       tags: [Avatars]
       summary: Add or withdraw a portrait like
-      description: Likes are deduplicated by voter ID.
+      description: Likes are global and deduplicated by voter ID across all rooms.
       requestBody:
         required: true
         content:
@@ -825,9 +820,8 @@ paths:
           $ref: '#/components/responses/PokerConflict'
         '503':
           $ref: '#/components/responses/Unavailable'
-  /api/rooms/{room}/{cue}:
+  /api/{cue}:
     parameters:
-      - $ref: '#/components/parameters/Room'
       - name: cue
         in: path
         required: true
@@ -840,7 +834,7 @@ paths:
       tags: [Cues]
       summary: Download a custom greeting or goodbye sound
       description: |
-        Returns 404 when the room uses the default cue.
+        Returns 404 when no global custom cue is set.
       parameters:
         - $ref: '#/components/parameters/Range'
       responses:
@@ -1193,7 +1187,7 @@ components:
           example: звук
         url:
           type: string
-          example: /api/rooms/palata-6/sounds/0123456789abcdef.wav
+          example: /api/sounds/0123456789abcdef.wav
     Avatar:
       type: object
       required: [id, url, likes]
@@ -1203,7 +1197,7 @@ components:
           example: 0123456789abcdef.png
         url:
           type: string
-          example: /api/rooms/palata-6/avatars/0123456789abcdef.png
+          example: /api/avatars/0123456789abcdef.png
         likes:
           type: integer
           minimum: 0

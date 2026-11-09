@@ -195,11 +195,11 @@ func (vs *voteStore) execute(kind, room, target string) {
 			log.Printf("vote kick %s/%s: %v", room, target, err)
 		}
 	case "sound":
-		if err := vs.rs.sb.delete(room, target); err != nil {
+		if err := vs.rs.sb.delete(target); err != nil {
 			log.Printf("vote sound-delete %s/%s: %v", room, target, err)
 		}
 	case "avatar":
-		if err := vs.rs.av.delete(room, target); err != nil {
+		if err := vs.rs.av.delete(target); err != nil {
 			log.Printf("vote avatar-delete %s/%s: %v", room, target, err)
 		}
 	case "room":

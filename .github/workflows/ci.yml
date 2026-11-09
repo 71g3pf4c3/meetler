@@ -21,11 +21,12 @@ jobs:
             api/go.sum
             tgbridge/go.sum
 
-      - name: api — build + vet
+      - name: api — build + vet + test
         working-directory: api
         run: |
           go build ./...
           go vet ./...
+          go test ./...
 
       - name: tgbridge — build + vet
         working-directory: tgbridge

@@ -201,7 +201,7 @@ func main() {
 		getEnv("LIVEKIT_URL", "ws://127.0.0.1:7880"),
 		cfg.apiKey, cfg.apiSecret,
 		getEnv("ROOMS_DIR", "/data/rooms"),
-		os.Getenv("TGBRIDGE_URL"), // пусто — мост не настроен
+		os.Getenv("TGBRIDGE_URL"),            // пусто — мост не настроен
 		getEnv("PROTECTED_ROOMS", "tishina"), // тихие палаты: без бота, не закрываются
 	)
 	cfg.rooms = roomsSvc
@@ -214,7 +214,10 @@ func main() {
 	mux.HandleFunc("/healthz", cfg.handleHealth)
 	mux.HandleFunc("/api/rooms", roomsSvc.handleRooms)       // GET: список палат
 	mux.HandleFunc("/api/rooms/", roomsSvc.handleRoomScoped) // маршруты отдельной палаты
-	mux.HandleFunc("/api/kick", roomsSvc.handleKick)         // кик участника
+	for _, path := range []string{"/api/sounds", "/api/sounds/", "/api/avatars", "/api/avatars/", "/api/welcome", "/api/farewell"} {
+		mux.HandleFunc(path, roomsSvc.handleMedia)
+	}
+	mux.HandleFunc("/api/kick", roomsSvc.handleKick) // кик участника
 
 	// центральная аутентификация: один общий пароль (APP_PASSWORD). Если пуст —
 	// гейт выключен, сайт открыт. /api/auth и /healthz — всегда доступны.
